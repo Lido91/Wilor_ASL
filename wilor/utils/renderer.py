@@ -355,7 +355,34 @@ class Renderer:
         if is_right is None:
             is_right = [1 for _ in range(len(vertices))]
 
-        mesh_list = [pyrender.Mesh.from_trimesh(self.vertices_to_trimesh(vvv, ttt.copy(), mesh_base_color, rot_axis, rot_angle, is_right=sss)) for vvv,ttt,sss in zip(vertices, cam_t, is_right)]
+        color_array = np.asarray(mesh_base_color, dtype=np.float32)
+        if color_array.ndim == 1:
+            mesh_colors = [tuple(color_array.tolist()) for _ in vertices]
+        else:
+            if len(color_array) != len(vertices):
+                raise ValueError(
+                    "Per-mesh colors must have the same length as vertices"
+                )
+            mesh_colors = [tuple(color.tolist()) for color in color_array]
+
+        mesh_list = [
+            pyrender.Mesh.from_trimesh(
+                self.vertices_to_trimesh(
+                    vertex,
+                    translation.copy(),
+                    color,
+                    rot_axis,
+                    rot_angle,
+                    is_right=hand_side,
+                )
+            )
+            for vertex, translation, hand_side, color in zip(
+                vertices,
+                cam_t,
+                is_right,
+                mesh_colors,
+            )
+        ]
 
         scene = pyrender.Scene(bg_color=[*scene_bg_color, 0.0],
                                ambient_light=(0.3, 0.3, 0.3))
