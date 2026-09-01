@@ -73,6 +73,17 @@ def parse_args() -> argparse.Namespace:
         help="Metadata/sharding name used with direct --input-root mode.",
     )
     parser.add_argument(
+        "--clip-id",
+        dest="clip_ids",
+        action="append",
+        default=None,
+        metavar="CLIP_ID",
+        help=(
+            "Only process this clip directory name; may be repeated. "
+            "This option is available in direct --input-root mode."
+        ),
+    )
+    parser.add_argument(
         "--splits",
         nargs="+",
         choices=("train", "val", "test"),
@@ -173,6 +184,11 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-frames-per-clip must be at least 1")
     if (args.input_root is None) != (args.output_root is None):
         parser.error("--input-root and --output-root must be used together")
+    if args.clip_ids is not None:
+        if args.input_root is None:
+            parser.error("--clip-id requires --input-root")
+        if len(args.clip_ids) != len(set(args.clip_ids)):
+            parser.error("--clip-id must not contain duplicates")
     return args
 
 
@@ -529,6 +545,17 @@ def main() -> int:
             raise FileNotFoundError(f"Input split does not exist: {input_root}")
 
         clip_dirs = sorted(path for path in input_root.iterdir() if path.is_dir())
+        if args.clip_ids is not None:
+            clip_dirs_by_id = {path.name: path for path in clip_dirs}
+            missing_clip_ids = [
+                clip_id for clip_id in args.clip_ids if clip_id not in clip_dirs_by_id
+            ]
+            if missing_clip_ids:
+                missing = ", ".join(missing_clip_ids)
+                raise FileNotFoundError(
+                    f"Clip IDs not found under {input_root}: {missing}"
+                )
+            clip_dirs = [clip_dirs_by_id[clip_id] for clip_id in args.clip_ids]
         assigned = [
             path
             for path in clip_dirs

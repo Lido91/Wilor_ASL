@@ -1,0 +1,31 @@
+/home/student/hwu/miniconda3/envs/wilor/lib/python3.10/site-packages/lightning_fabric/__init__.py:36: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  __import__("pkg_resources").declare_namespace(__name__)
+/home/student/hwu/miniconda3/envs/wilor/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+[2026-08-04 03:09:20] worker shard=0/2, device=cuda:0, fast=True
+Loading  pretrained_models/wilor_final.ckpt
+Lightning automatically upgraded your loaded checkpoint from v1.8.1 to v2.0.9. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint --file pretrained_models/wilor_final.ckpt`
+WARNING: You are using a MANO model, with only 10 shape coefficients.
+[2026-08-04 03:09:28] split=youtube: 21/32 clips assigned; output=/data/hwu/youtube_dataset/clip_fps24_img_0_wilor_out
+[2026-08-04 03:09:39] DONE youtube/_JzlJsE8mhI-078: frames=194, hands=316, clip_fps=18.09; worker_total clips=1, frames=194, fps=17.01, failed=0, skipped=0
+[2026-08-04 03:09:45] DONE youtube/ZGi1h1R2CDI-002: frames=109, hands=211, clip_fps=16.46; worker_total clips=2, frames=303, fps=16.81, failed=0, skipped=0
+[2026-08-04 03:09:46] DONE youtube/jZP5thQ22S0-045: frames=39, hands=78, clip_fps=30.37; worker_total clips=3, frames=342, fps=17.71, failed=0, skipped=0
+[2026-08-04 03:09:54] DONE youtube/ZGi1h1R2CDI-016: frames=122, hands=244, clip_fps=15.81; worker_total clips=4, frames=464, fps=17.16, failed=0, skipped=0
+[2026-08-04 03:10:01] DONE youtube/ZGi1h1R2CDI-020: frames=108, hands=216, clip_fps=15.91; worker_total clips=5, frames=572, fps=16.91, failed=0, skipped=0
+[2026-08-04 03:10:06] DONE youtube/jzUTBq9-P1U-004: frames=96, hands=140, clip_fps=19.99; worker_total clips=6, frames=668, fps=17.29, failed=0, skipped=0
+[2026-08-04 03:10:10] DONE youtube/ZGi1h1R2CDI-026: frames=111, hands=222, clip_fps=27.29; worker_total clips=7, frames=779, fps=18.24, failed=0, skipped=0
+[2026-08-04 03:10:15] DONE youtube/jzUTBq9-P1U-018: frames=102, hands=162, clip_fps=18.03; worker_total clips=8, frames=881, fps=18.22, failed=0, skipped=0
+[2026-08-04 03:10:22] DONE youtube/ZGi1h1R2CDI-030: frames=119, hands=238, clip_fps=17.79; worker_total clips=9, frames=1000, fps=18.17, failed=0, skipped=0
+[2026-08-04 03:10:28] DONE youtube/ZGi1h1R2CDI-034: frames=86, hands=172, clip_fps=15.84; worker_total clips=10, frames=1086, fps=17.96, failed=0, skipped=0
+[2026-08-04 03:10:30] DONE youtube/jzUTBq9-P1U-027: frames=62, hands=102, clip_fps=23.91; worker_total clips=11, frames=1148, fps=18.20, failed=0, skipped=0
+[2026-08-04 03:10:33] DONE youtube/ZGi1h1R2CDI-041: frames=60, hands=120, clip_fps=23.37; worker_total clips=12, frames=1208, fps=18.40, failed=0, skipped=0
+[2026-08-04 03:10:38] DONE youtube/jzUTBq9-P1U-029: frames=130, hands=240, clip_fps=24.64; worker_total clips=13, frames=1338, fps=18.87, failed=0, skipped=0
+[2026-08-04 03:10:39] DONE youtube/ZGORceOTG0A-002: frames=30, hands=38, clip_fps=36.23; worker_total clips=14, frames=1368, fps=19.07, failed=0, skipped=0
+[2026-08-04 03:10:50] DONE youtube/jzUTBq9-P1U-039: frames=233, hands=391, clip_fps=20.74; worker_total clips=15, frames=1601, fps=19.29, failed=0, skipped=0
+[2026-08-04 03:10:52] DONE youtube/jzUTBq9-P1U-041: frames=54, hands=78, clip_fps=23.42; worker_total clips=16, frames=1655, fps=19.40, failed=0, skipped=0
+[2026-08-04 03:10:56] DONE youtube/ZgUBU0NNEDU-025: frames=192, hands=194, clip_fps=54.29; worker_total clips=17, frames=1847, fps=20.79, failed=0, skipped=0
+[2026-08-04 03:10:57] DONE youtube/jzVjTSQk70w-000: frames=31, hands=62, clip_fps=34.00; worker_total clips=18, frames=1878, fps=20.93, failed=0, skipped=0
+[2026-08-04 03:11:07] DONE youtube/ZgUBU0NNEDU-029: frames=164, hands=328, clip_fps=16.09; worker_total clips=19, frames=2042, fps=20.43, failed=0, skipped=0
+[2026-08-04 03:11:14] DONE youtube/Jz-yfXPFXiw-003: frames=97, hands=194, clip_fps=13.38; worker_total clips=20, frames=2139, fps=19.95, failed=0, skipped=0
+[2026-08-04 03:11:17] DONE youtube/ZHcFnYv59Ts-033: frames=70, hands=138, clip_fps=22.15; worker_total clips=21, frames=2209, fps=20.02, failed=0, skipped=0
+[2026-08-04 03:11:17] COMPLETE clips=21, frames=2209, hands=3884, failed=0, skipped=0, seconds=110.4
