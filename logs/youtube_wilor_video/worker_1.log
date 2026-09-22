@@ -1,0 +1,28 @@
+/home/student/hwu/miniconda3/envs/wilor/lib/python3.10/site-packages/lightning_fabric/__init__.py:36: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  __import__("pkg_resources").declare_namespace(__name__)
+/home/student/hwu/miniconda3/envs/wilor/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+[2026-09-22 02:50:24] worker shard=1/2, device=cuda:0, fast=True
+Loading  pretrained_models/wilor_final.ckpt
+Lightning automatically upgraded your loaded checkpoint from v1.8.1 to v2.0.9. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint --file pretrained_models/wilor_final.ckpt`
+WARNING: You are using a MANO model, with only 10 shape coefficients.
+[2026-09-22 02:51:07] split=youtube: mode=video, 224477/449186 clips assigned; output=/data/hwu/youtube_dataset/clip_fps24_wilor_out
+[2026-09-22 02:51:07] video frame names: '000000.jpg' onward
+[2026-09-22 02:51:11] DONE youtube/--6bmFM9wT4-000: frames=26, hands=52, clip_fps=7.06; worker_total clips=1, frames=26, fps=0.72, failed=0, skipped=0
+[2026-09-22 02:51:14] DONE youtube/--6bmFM9wT4-003: frames=78, hands=156, clip_fps=24.14; worker_total clips=2, frames=104, fps=2.64, failed=0, skipped=0
+[2026-09-22 02:51:22] DONE youtube/--6bmFM9wT4-005: frames=142, hands=284, clip_fps=17.83; worker_total clips=3, frames=246, fps=5.20, failed=0, skipped=0
+[2026-09-22 02:51:33] DONE youtube/--6bmFM9wT4-010: frames=279, hands=558, clip_fps=26.98; worker_total clips=4, frames=525, fps=9.10, failed=0, skipped=0
+[2026-09-22 02:51:45] DONE youtube/--6bmFM9wT4-012: frames=298, hands=597, clip_fps=23.36; worker_total clips=5, frames=823, fps=11.68, failed=0, skipped=0
+[2026-09-22 02:51:53] DONE youtube/--6bmFM9wT4-013: frames=183, hands=369, clip_fps=23.11; worker_total clips=6, frames=1006, fps=12.84, failed=0, skipped=0
+[2026-09-22 02:52:06] DONE youtube/--6bmFM9wT4-016: frames=308, hands=657, clip_fps=24.43; worker_total clips=7, frames=1314, fps=14.44, failed=0, skipped=0
+[2026-09-22 02:52:08] DONE youtube/--6bmFM9wT4-017: frames=44, hands=89, clip_fps=17.62; worker_total clips=8, frames=1358, fps=14.53, failed=0, skipped=0
+[2026-09-22 02:52:19] DONE youtube/--6bmFM9wT4-020: frames=284, hands=569, clip_fps=26.76; worker_total clips=9, frames=1642, fps=15.78, failed=0, skipped=0
+[2026-09-22 02:52:37] DONE youtube/--6bmFM9wT4-022: frames=301, hands=1081, clip_fps=16.50; worker_total clips=10, frames=1943, fps=15.88, failed=0, skipped=0
+[2026-09-22 02:53:01] DONE youtube/--6bmFM9wT4-025: frames=349, hands=1746, clip_fps=14.55; worker_total clips=11, frames=2292, fps=15.66, failed=0, skipped=0
+[2026-09-22 02:53:13] DONE youtube/--6bmFM9wT4-026: frames=162, hands=930, clip_fps=13.93; worker_total clips=12, frames=2454, fps=15.54, failed=0, skipped=0
+[2026-09-22 02:53:17] DONE youtube/--6bmFM9wT4-029: frames=103, hands=206, clip_fps=25.50; worker_total clips=13, frames=2557, fps=15.79, failed=0, skipped=0
+[2026-09-22 02:53:30] DONE youtube/--6bmFM9wT4-035: frames=199, hands=401, clip_fps=15.56; worker_total clips=14, frames=2756, fps=15.77, failed=0, skipped=0
+[2026-09-22 02:53:37] DONE youtube/--6bmFM9wT4-036: frames=183, hands=366, clip_fps=23.89; worker_total clips=15, frames=2939, fps=16.11, failed=0, skipped=0
+[2026-09-22 02:53:54] DONE youtube/--6bmFM9wT4-037: frames=301, hands=602, clip_fps=18.49; worker_total clips=16, frames=3240, fps=16.30, failed=0, skipped=0
+[2026-09-22 02:54:03] DONE youtube/--6bmFM9wT4-038: frames=167, hands=335, clip_fps=17.24; worker_total clips=17, frames=3407, fps=16.35, failed=0, skipped=0
+[2026-09-22 02:54:08] DONE youtube/--6bmFM9wT4-039: frames=128, hands=256, clip_fps=29.38; worker_total clips=18, frames=3535, fps=16.62, failed=0, skipped=0

@@ -1,0 +1,25 @@
+/home/student/hwu/miniconda3/envs/wilor/lib/python3.10/site-packages/lightning_fabric/__init__.py:36: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  __import__("pkg_resources").declare_namespace(__name__)
+/home/student/hwu/miniconda3/envs/wilor/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+[2026-09-22 02:50:24] worker shard=0/2, device=cuda:0, fast=True
+Loading  pretrained_models/wilor_final.ckpt
+Lightning automatically upgraded your loaded checkpoint from v1.8.1 to v2.0.9. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint --file pretrained_models/wilor_final.ckpt`
+WARNING: You are using a MANO model, with only 10 shape coefficients.
+[2026-09-22 02:51:07] split=youtube: mode=video, 224709/449186 clips assigned; output=/data/hwu/youtube_dataset/clip_fps24_wilor_out
+[2026-09-22 02:51:07] video frame names: '000000.jpg' onward
+[2026-09-22 02:51:19] DONE youtube/--6bmFM9wT4-001: frames=62, hands=124, clip_fps=5.46; worker_total clips=1, frames=62, fps=1.49, failed=0, skipped=0
+[2026-09-22 02:51:21] DONE youtube/--6bmFM9wT4-002: frames=28, hands=46, clip_fps=14.18; worker_total clips=2, frames=90, fps=2.07, failed=0, skipped=0
+[2026-09-22 02:51:33] DONE youtube/--6bmFM9wT4-004: frames=207, hands=414, clip_fps=17.38; worker_total clips=3, frames=297, fps=5.35, failed=0, skipped=0
+[2026-09-22 02:51:40] DONE youtube/--6bmFM9wT4-006: frames=131, hands=262, clip_fps=17.70; worker_total clips=4, frames=428, fps=6.81, failed=0, skipped=0
+[2026-09-22 02:51:59] DONE youtube/--6bmFM9wT4-007: frames=284, hands=572, clip_fps=14.88; worker_total clips=5, frames=712, fps=8.69, failed=0, skipped=0
+[2026-09-22 02:52:17] DONE youtube/--6bmFM9wT4-008: frames=271, hands=542, clip_fps=15.11; worker_total clips=6, frames=983, fps=9.84, failed=0, skipped=0
+[2026-09-22 02:52:27] DONE youtube/--6bmFM9wT4-009: frames=139, hands=282, clip_fps=14.49; worker_total clips=7, frames=1122, fps=10.25, failed=0, skipped=0
+[2026-09-22 02:52:35] DONE youtube/--6bmFM9wT4-011: frames=141, hands=282, clip_fps=16.76; worker_total clips=8, frames=1263, fps=10.71, failed=0, skipped=0
+[2026-09-22 02:52:54] DONE youtube/--6bmFM9wT4-014: frames=290, hands=589, clip_fps=15.61; worker_total clips=9, frames=1553, fps=11.38, failed=0, skipped=0
+[2026-09-22 02:53:00] DONE youtube/--6bmFM9wT4-015: frames=83, hands=167, clip_fps=13.14; worker_total clips=10, frames=1636, fps=11.46, failed=0, skipped=0
+[2026-09-22 02:53:20] DONE youtube/--6bmFM9wT4-018: frames=268, hands=753, clip_fps=13.09; worker_total clips=11, frames=1904, fps=11.66, failed=0, skipped=0
+[2026-09-22 02:53:31] DONE youtube/--6bmFM9wT4-019: frames=91, hands=189, clip_fps=8.45; worker_total clips=12, frames=1995, fps=11.46, failed=0, skipped=0
+[2026-09-22 02:53:34] DONE youtube/--6bmFM9wT4-021: frames=52, hands=105, clip_fps=15.69; worker_total clips=13, frames=2047, fps=11.54, failed=0, skipped=0
+[2026-09-22 02:53:54] DONE youtube/--6bmFM9wT4-023: frames=238, hands=496, clip_fps=12.40; worker_total clips=14, frames=2285, fps=11.63, failed=0, skipped=0
+[2026-09-22 02:54:01] DONE youtube/--6bmFM9wT4-024: frames=70, hands=276, clip_fps=9.07; worker_total clips=15, frames=2355, fps=11.53, failed=0, skipped=0

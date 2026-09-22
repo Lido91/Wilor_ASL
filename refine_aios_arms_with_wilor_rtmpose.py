@@ -25,6 +25,13 @@ supervise long gaps and nearest-filled prefix/suffix frames. A 3-D torso-volume
 loss discourages arm penetration. Every clip is optimized independently. Finger
 pose, camera, shape, root, face, and all non-listed body joints are copied
 unchanged from the fused input.
+
+Speed: the optimizer never needs vertices, so SMPL-X joints and wrist
+rotations come from a forward-kinematics-only pass (``SMPLXJointKinematics``)
+that is verified once per process against the full model. Whole-dataset runs
+are split across processes with ``--num-shards``/``--shard-index``; clips that
+fail validation or refinement are skipped and listed in
+``<output-root>/failed_clips*.txt`` unless ``--strict`` is given.
 """
 
 from __future__ import annotations
@@ -37,7 +44,7 @@ from typing import Sequence
 import numpy as np
 import torch
 from scipy.signal import butter, sosfiltfilt
-from smplx.lbs import batch_rodrigues
+from smplx.lbs import batch_rigid_transform, batch_rodrigues, vertices2joints
 from tqdm.auto import tqdm
 
 import refine_aios_arms_with_rtmpose as rtmpose
@@ -66,8 +73,13 @@ SMPLX_PALM_JOINT_INDICES = (
 # SMPL-X left/right wrist joints. Their global rotation is the hand-root
 # rotation, i.e. the SMPL-X counterpart of MANO's global_orient.
 SMPLX_WRIST_JOINT_INDICES = (20, 21)
-# Kinematic-tree joints needed to reach both wrists: pelvis + 21 body joints.
-SMPLX_WRIST_CHAIN_JOINTS = 22
+# Number of SMPL-X kinematic-tree joints (pelvis, 21 body, jaw, 2 eyes, 30
+# fingers). ``model(...).joints[:, :55]`` are exactly these posed joints;
+# everything after them is regressed from vertices or landmarks.
+SMPLX_TREE_JOINTS = 55
+# Largest joint position error (metres) tolerated between the fast kinematic
+# forward pass and the full SMPL-X model when the fast path is verified.
+KINEMATICS_CHECK_TOLERANCE_M = 1e-4
 MIRROR_X = np.diag((-1.0, 1.0, 1.0))
 # Index of the wrist inside the RTMPose [shoulder, elbow, wrist] layout.
 RTMPOSE_WRIST_SLOT = 2
@@ -87,6 +99,21 @@ PROXIMAL_DELTA_INDICES = tuple(
 # Frames whose palm orientation error exceeds this are counted as "bad" in the
 # metrics; the count is reported per clip so unconverged frames are visible.
 ORIENT_BAD_FRAME_DEGREES = 20.0
+# Clips that fail validation or refinement are listed here (one
+# "<clip_id>\t<stage>\t<error>" line each) unless --strict is given.
+FAILED_CLIPS_FILENAME = "failed_clips.txt"
+# Per-clip data problems that must not abort a whole-dataset run: truncated
+# fused clips (duration disagrees with the clip id), missing/corrupt RTMPose or
+# WiLoR files, contract violations, and clips with no usable targets.
+PER_CLIP_ERRORS = (
+    EOFError,
+    FileNotFoundError,
+    KeyError,
+    OSError,
+    pickle.UnpicklingError,
+    RuntimeError,
+    ValueError,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -117,7 +144,33 @@ def parse_args() -> argparse.Namespace:
         help="Process only this fused clip; may be repeated.",
     )
     parser.add_argument("--max-clips", type=int, default=None)
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help=(
+            "Split the (sorted, --max-clips-limited) clip list into this many "
+            "interleaved shards so independent processes, e.g. one per GPU, "
+            "can each validate and refine one shard."
+        ),
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Which shard this process handles, in [0, --num-shards).",
+    )
     parser.add_argument("--device", default="auto", help="auto, cpu, or cuda:N")
+    parser.add_argument(
+        "--torch-threads",
+        type=int,
+        default=None,
+        help=(
+            "torch intra-op thread count for this process. Use 1 when running "
+            "many CPU shards on one machine so they do not oversubscribe the "
+            "cores (default: torch's own default, usually all cores)."
+        ),
+    )
     parser.add_argument("--iterations", type=int, default=180)
     parser.add_argument(
         "--orient-warmup-iterations",
@@ -131,7 +184,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--learning-rate", type=float, default=0.03)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2048,
+        help=(
+            "Frames per forward chunk. The fast kinematic forward pass needs "
+            "only a few MB per frame, so most clips fit in one chunk; the "
+            "result does not depend on the chunking."
+        ),
+    )
     parser.add_argument("--aios-focal-length", type=float, default=5000.0)
 
     parser.add_argument("--confidence-threshold", type=float, default=0.3)
@@ -316,6 +378,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Validate all inputs without loading SMPL-X or MANO.",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Abort on the first clip that fails validation or refinement. By "
+            "default such clips are skipped, reported, and listed in "
+            f"<output-root>/{FAILED_CLIPS_FILENAME} so a full-dataset run is "
+            "not lost to one truncated or misaligned clip."
+        ),
+    )
     args = parser.parse_args()
 
     positive = (
@@ -374,6 +446,14 @@ def parse_args() -> argparse.Namespace:
         parser.error("--confidence-threshold must be less than 1")
     if args.max_clips is not None and args.max_clips <= 0:
         parser.error("--max-clips must be positive")
+    if args.num_shards <= 0:
+        parser.error("--num-shards must be positive")
+    if args.torch_threads is not None:
+        if args.torch_threads <= 0:
+            parser.error("--torch-threads must be positive")
+        torch.set_num_threads(args.torch_threads)
+    if not 0 <= args.shard_index < args.num_shards:
+        parser.error("--shard-index must be in [0, --num-shards)")
     if args.orient_warmup_iterations is None:
         args.orient_warmup_iterations = args.iterations // 3
     if not 0 <= args.orient_warmup_iterations <= args.iterations:
@@ -535,69 +615,155 @@ def build_wilor_orientation_targets(
     return targets.astype(np.float32)
 
 
-def smplx_arm_palm_and_hip_joints(
-    model: torch.nn.Module,
-    values: dict[str, torch.Tensor],
-    body_pose: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    count = len(body_pose)
-    zeros = torch.zeros((count, 3), device=body_pose.device, dtype=body_pose.dtype)
-    output = model(
-        betas=values["shape"],
-        global_orient=values["root"],
-        body_pose=body_pose.reshape(count, -1),
-        left_hand_pose=values["left_hand"],
-        right_hand_pose=values["right_hand"],
-        jaw_pose=values["jaw"],
-        leye_pose=zeros,
-        reye_pose=zeros,
-        expression=values["expression"],
-        return_verts=False,
-    )
-    arm_indices = torch.tensor(
-        rtmpose.SMPLX_ARM_JOINT_INDICES,
-        device=body_pose.device,
-        dtype=torch.long,
-    )
-    palm_indices = torch.tensor(
-        SMPLX_PALM_JOINT_INDICES, device=body_pose.device, dtype=torch.long
-    )
-    hip_indices = torch.tensor(
-        rtmpose.SMPLX_HIP_JOINT_INDICES,
-        device=body_pose.device,
-        dtype=torch.long,
-    )
-    return (
-        output.joints[:, arm_indices],
-        output.joints[:, palm_indices],
-        output.joints[:, hip_indices],
-    )
+class SMPLXJointKinematics:
+    """Posed SMPL-X tree joints and their global rotations, without vertices.
 
+    The optimization reads only kinematic-tree joints (shoulders, elbows,
+    wrists, palm/finger roots, hips; all indices below 55) plus the two wrist
+    rotations. In ``smplx`` those joints come from ``batch_rigid_transform`` on
+    the shape-dependent rest joints; the pose blend shapes and linear blend
+    skinning that dominate a full ``model(...)`` call only produce vertices and
+    the vertex-regressed extra joints, which are never used here. Skipping them
+    makes one forward pass roughly two orders of magnitude cheaper while
+    returning exactly ``model(...).joints[:, :55]`` (checked once per process by
+    :func:`verify_kinematics`).
 
-def smplx_wrist_rotations(
-    model: torch.nn.Module,
-    values: dict[str, torch.Tensor],
-    body_pose: torch.Tensor,
-) -> torch.Tensor:
-    """Global (camera-frame) rotation of both SMPL-X wrists, shape [N, 2, 3, 3].
+    Rest joints are linear in shape and expression, so ``J_regressor`` is
+    folded into the blend-shape directions once: ``rest = template +
+    joint_shapedirs @ [betas, expression]``.
 
-    SMPL-X rest joint frames are all axis-aligned with the template, so the
-    accumulated rotation root @ spine ... @ wrist is exactly the rotation applied
-    to the (MANO-compatible) hand template, i.e. MANO's global_orient. It is
-    computed by forward kinematics on the axis-angle chain, so it stays
-    differentiable with respect to every refined arm joint.
+    The wrist global rotation is the accumulated rotation root @ spine ... @
+    wrist. SMPL-X rest joint frames are axis-aligned with the template, so this
+    is the rotation applied to the MANO-compatible hand template, i.e. MANO's
+    ``global_orient``, and it stays differentiable in every refined arm joint.
     """
-    count = len(body_pose)
-    rotation_vectors = torch.cat((values["root"][:, None, :], body_pose), dim=1)
-    local = batch_rodrigues(rotation_vectors.reshape(-1, 3)).reshape(
-        count, SMPLX_WRIST_CHAIN_JOINTS, 3, 3
-    )
-    parents = model.parents[:SMPLX_WRIST_CHAIN_JOINTS].tolist()
-    global_rotations = [local[:, 0]]
-    for joint in range(1, SMPLX_WRIST_CHAIN_JOINTS):
-        global_rotations.append(global_rotations[parents[joint]] @ local[:, joint])
-    stacked = torch.stack(global_rotations, dim=1)
-    return stacked[:, list(SMPLX_WRIST_JOINT_INDICES)]
+
+    def __init__(self, model: torch.nn.Module) -> None:
+        device = model.v_template.device
+        self.parents = model.parents.to(device)
+        self.num_joints = int(len(self.parents))
+        if self.num_joints != SMPLX_TREE_JOINTS:
+            raise RuntimeError(
+                f"expected {SMPLX_TREE_JOINTS} SMPL-X tree joints, "
+                f"got {self.num_joints}"
+            )
+        shapedirs = torch.cat((model.shapedirs, model.expr_dirs), dim=-1)
+        self.joint_template = vertices2joints(
+            model.J_regressor, model.v_template[None]
+        )[0]
+        self.joint_shapedirs = torch.einsum(
+            "jv,vck->jck", model.J_regressor, shapedirs
+        )
+        # Hand means (flat_hand_mean=False) live here; body/root entries are 0.
+        self.pose_mean = model.pose_mean.reshape(self.num_joints, 3)
+        self.arm_indices = torch.tensor(
+            rtmpose.SMPLX_ARM_JOINT_INDICES, device=device, dtype=torch.long
+        )
+        self.palm_indices = torch.tensor(
+            SMPLX_PALM_JOINT_INDICES, device=device, dtype=torch.long
+        )
+        self.hip_indices = torch.tensor(
+            rtmpose.SMPLX_HIP_JOINT_INDICES, device=device, dtype=torch.long
+        )
+        self.wrist_indices = torch.tensor(
+            SMPLX_WRIST_JOINT_INDICES, device=device, dtype=torch.long
+        )
+        self.verified = False
+
+    def rest_joints(
+        self, shape: torch.Tensor, expression: torch.Tensor
+    ) -> torch.Tensor:
+        components = torch.cat((shape, expression), dim=-1)
+        return self.joint_template[None] + torch.einsum(
+            "nk,jck->njc", components, self.joint_shapedirs
+        )
+
+    def full_pose(
+        self, values: dict[str, torch.Tensor], body_pose: torch.Tensor
+    ) -> torch.Tensor:
+        """[N, 55, 3] axis-angle in smplx's joint order, including pose_mean."""
+        count = len(body_pose)
+        eye = body_pose.new_zeros((count, 1, 3))
+        pose = torch.cat(
+            (
+                values["root"][:, None],
+                body_pose.reshape(count, -1, 3),
+                values["jaw"][:, None],
+                eye,
+                eye,
+                values["left_hand"].reshape(count, -1, 3),
+                values["right_hand"].reshape(count, -1, 3),
+            ),
+            dim=1,
+        )
+        return pose + self.pose_mean[None]
+
+    def forward(
+        self, values: dict[str, torch.Tensor], body_pose: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Posed joints [N, 55, 3] and global joint rotations [N, 55, 3, 3]."""
+        count = len(body_pose)
+        pose = self.full_pose(values, body_pose)
+        rotations = batch_rodrigues(pose.reshape(-1, 3)).reshape(
+            count, self.num_joints, 3, 3
+        )
+        rest = self.rest_joints(values["shape"], values["expression"])
+        joints, transforms = batch_rigid_transform(
+            rotations, rest, self.parents, dtype=rotations.dtype
+        )
+        # batch_rigid_transform subtracts the rest position from the
+        # translation column only; the rotation block is the global rotation.
+        return joints, transforms[:, :, :3, :3]
+
+    def arm_palm_hip_and_wrists(
+        self, values: dict[str, torch.Tensor], body_pose: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        joints, rotations = self.forward(values, body_pose)
+        return (
+            joints[:, self.arm_indices],
+            joints[:, self.palm_indices],
+            joints[:, self.hip_indices],
+            rotations[:, self.wrist_indices],
+        )
+
+
+def verify_kinematics(
+    kinematics: SMPLXJointKinematics,
+    model: torch.nn.Module,
+    values: dict[str, torch.Tensor],
+    max_frames: int = 32,
+) -> float:
+    """Compare the fast joints with the full SMPL-X model on a few frames.
+
+    Raises if any tree joint differs by more than
+    ``KINEMATICS_CHECK_TOLERANCE_M``; returns the largest difference in metres.
+    """
+    sample = rtmpose.slice_values(values, 0, min(max_frames, len(values["body"])))
+    count = len(sample["body"])
+    zeros = torch.zeros((count, 3), device=sample["body"].device)
+    with torch.no_grad():
+        joints, _ = kinematics.forward(sample, sample["body"])
+        output = model(
+            betas=sample["shape"],
+            global_orient=sample["root"],
+            body_pose=sample["body"].reshape(count, -1),
+            left_hand_pose=sample["left_hand"],
+            right_hand_pose=sample["right_hand"],
+            jaw_pose=sample["jaw"],
+            leye_pose=zeros,
+            reye_pose=zeros,
+            expression=sample["expression"],
+            return_verts=False,
+        )
+        reference = output.joints[:, : kinematics.num_joints]
+        error = float((joints - reference).abs().max())
+    if not np.isfinite(error) or error > KINEMATICS_CHECK_TOLERANCE_M:
+        raise RuntimeError(
+            f"fast SMPL-X kinematics disagree with the full model by "
+            f"{error:.3e} m (tolerance {KINEMATICS_CHECK_TOLERANCE_M:g} m)"
+        )
+    kinematics.verified = True
+    return error
 
 
 def orientation_cosine(
@@ -690,16 +856,15 @@ def clamp_delta(delta: torch.Tensor, limits: torch.Tensor) -> None:
 
 
 def predict_chunk(
-    model: torch.nn.Module,
+    kinematics: SMPLXJointKinematics,
     values: dict[str, torch.Tensor],
     delta: torch.Tensor,
     args: argparse.Namespace,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     body_pose = rtmpose.body_with_delta(values["body"], delta)
-    arm_joints, palm_joints, hip_joints = smplx_arm_palm_and_hip_joints(
-        model, values, body_pose
+    arm_joints, palm_joints, hip_joints, wrist_rotations = (
+        kinematics.arm_palm_hip_and_wrists(values, body_pose)
     )
-    wrist_rotations = smplx_wrist_rotations(model, values, body_pose)
     arm_projected = rtmpose.project_smplx_joints(
         arm_joints,
         values["camera"],
@@ -725,7 +890,7 @@ def predict_chunk(
 
 
 def predict_sequence(
-    model: torch.nn.Module,
+    kinematics: SMPLXJointKinematics,
     values: dict[str, torch.Tensor],
     delta: torch.Tensor,
     args: argparse.Namespace,
@@ -737,7 +902,7 @@ def predict_sequence(
     for start in range(0, len(delta), args.batch_size):
         stop = min(start + args.batch_size, len(delta))
         arm, palm, rotations, _, penetration = predict_chunk(
-            model,
+            kinematics,
             rtmpose.slice_values(values, start, stop),
             delta[start:stop],
             args,
@@ -827,7 +992,7 @@ def orientation_metrics(
 
 
 def optimize_arm_pose(
-    model: torch.nn.Module,
+    kinematics: SMPLXJointKinematics,
     values: dict[str, torch.Tensor],
     rtmpose_targets: np.ndarray,
     rtmpose_weights: np.ndarray,
@@ -853,14 +1018,33 @@ def optimize_arm_pose(
 
     with torch.no_grad():
         arm_before, palm_before, orient_before, penetration_before = (
-            predict_sequence(model, values, delta, args)
+            predict_sequence(kinematics, values, delta, args)
         )
 
+    # Chunk boundaries and their share of the total loss weight are fixed for
+    # the whole optimization; computing them once keeps the iteration loop free
+    # of GPU->CPU syncs (each float(tensor) call is one).
     rtmpose_joint_weights = rtmpose.joint_loss_weights(args, device)
-    total_rtmpose_weight = float(
-        (rtmpose_weight_tensor * rtmpose_joint_weights).sum()
+    per_frame_rtmpose_weight = (rtmpose_weight_tensor * rtmpose_joint_weights).sum(
+        dim=(1, 2)
     )
-    total_wilor_weight = float(wilor_weight_tensor.sum())
+    per_frame_wilor_weight = wilor_weight_tensor.sum(dim=1)
+    total_rtmpose_weight = max(float(per_frame_rtmpose_weight.sum()), 1e-8)
+    total_wilor_weight = max(float(per_frame_wilor_weight.sum()), 1e-8)
+    chunks = []
+    for start in range(0, num_frames, args.batch_size):
+        stop = min(start + args.batch_size, num_frames)
+        chunks.append(
+            (
+                start,
+                stop,
+                float(per_frame_rtmpose_weight[start:stop].sum())
+                / total_rtmpose_weight,
+                float(per_frame_wilor_weight[start:stop].sum())
+                / total_wilor_weight,
+                (stop - start) / num_frames,
+            )
+        )
     limits = torch.from_numpy(delta_limit_values(args)).to(device)
     proximal = torch.tensor(
         PROXIMAL_DELTA_INDICES, device=device, dtype=torch.long
@@ -888,23 +1072,19 @@ def optimize_arm_pose(
             delta, args
         )
         regularization.backward()
-        rtmpose_value = 0.0
-        wilor_wrist_value = 0.0
-        wilor_palm_value = 0.0
-        wilor_orient_value = 0.0
-        collision_value = 0.0
+        logging = iteration == 1 or iteration % args.log_every == 0
+        rtmpose_value = torch.zeros((), device=device)
+        wilor_wrist_value = torch.zeros((), device=device)
+        wilor_palm_value = torch.zeros((), device=device)
+        wilor_orient_value = torch.zeros((), device=device)
+        collision_value = torch.zeros((), device=device)
 
-        for start in range(0, num_frames, args.batch_size):
-            stop = min(start + args.batch_size, num_frames)
+        for start, stop, rt_fraction, wi_fraction, collision_fraction in chunks:
             chunk_values = rtmpose.slice_values(values, start, stop)
             arm, palm, wrist_rotations, collision_loss, _ = predict_chunk(
-                model, chunk_values, delta[start:stop], args
+                kinematics, chunk_values, delta[start:stop], args
             )
             rt_weights = rtmpose_weight_tensor[start:stop]
-            rt_chunk_weight = float(
-                (rt_weights * rtmpose_joint_weights).sum().detach()
-            )
-            rt_fraction = rt_chunk_weight / max(total_rtmpose_weight, 1e-8)
             rt_loss = rtmpose.reprojection_loss(
                 arm,
                 rtmpose_target_tensor[start:stop],
@@ -914,8 +1094,6 @@ def optimize_arm_pose(
             )
 
             wi_weights = wilor_weight_tensor[start:stop]
-            wi_chunk_weight = float(wi_weights.sum().detach())
-            wi_fraction = wi_chunk_weight / max(total_wilor_weight, 1e-8)
             wi_targets = wilor_target_tensor[start:stop]
             wrist_loss = wilor_wrist_loss(
                 palm, wi_targets, wi_weights, chunk_values["image_shape"], args
@@ -930,20 +1108,22 @@ def optimize_arm_pose(
             )
             if orient_weight > 0:
                 wilor_terms = wilor_terms + orient_weight * orient_loss
-            collision_fraction = (stop - start) / num_frames
             chunk_loss = (
                 rt_fraction * rt_loss
                 + wi_fraction * wilor_terms
                 + collision_fraction * args.collision_weight * collision_loss
             )
             chunk_loss.backward()
-            rtmpose_value += rt_fraction * float(rt_loss.detach())
-            wilor_wrist_value += wi_fraction * float(wrist_loss.detach())
-            wilor_palm_value += wi_fraction * float(palm_loss.detach())
-            wilor_orient_value += wi_fraction * float(orient_loss.detach())
-            collision_value += collision_fraction * float(collision_loss.detach())
+            if logging:
+                rtmpose_value += rt_fraction * rt_loss.detach()
+                wilor_wrist_value += wi_fraction * wrist_loss.detach()
+                wilor_palm_value += wi_fraction * palm_loss.detach()
+                wilor_orient_value += wi_fraction * orient_loss.detach()
+                collision_value += collision_fraction * collision_loss.detach()
 
-        if delta.grad is None or not torch.isfinite(delta.grad).all():
+        if delta.grad is None:
+            raise RuntimeError("combined arm optimization produced no gradients")
+        if logging and not torch.isfinite(delta.grad).all():
             raise RuntimeError("combined arm optimization produced non-finite gradients")
         optimizer.step()
         with torch.no_grad():
@@ -951,31 +1131,33 @@ def optimize_arm_pose(
             if frozen_proximal is not None:
                 delta[:, proximal] = frozen_proximal
 
-        if iteration == 1 or iteration % args.log_every == 0:
+        if logging:
             total = (
                 rtmpose_value
                 + args.wilor_wrist_weight * wilor_wrist_value
                 + args.wilor_palm_weight * wilor_palm_value
                 + orient_weight * wilor_orient_value
                 + args.collision_weight * collision_value
-                + float(regularization.detach())
+                + regularization.detach()
             )
             stage = 1 if iteration <= warmup else 2
             tqdm.write(
-                f"  iter={iteration:04d} stage={stage} loss={total:.6f} "
-                f"rtmpose={rtmpose_value:.6f} "
-                f"wilor_wrist={wilor_wrist_value:.6f} "
-                f"wilor_palm={wilor_palm_value:.6f} "
-                f"wilor_orient={wilor_orient_value:.6f} "
-                f"collision={collision_value:.6f} "
+                f"  iter={iteration:04d} stage={stage} loss={float(total):.6f} "
+                f"rtmpose={float(rtmpose_value):.6f} "
+                f"wilor_wrist={float(wilor_wrist_value):.6f} "
+                f"wilor_palm={float(wilor_palm_value):.6f} "
+                f"wilor_orient={float(wilor_orient_value):.6f} "
+                f"collision={float(collision_value):.6f} "
                 f"prior={float(regularization_parts['prior']):.6f} "
                 f"vel={float(regularization_parts['velocity']):.6f} "
                 f"acc={float(regularization_parts['acceleration']):.6f}"
             )
 
+    if not torch.isfinite(delta).all():
+        raise RuntimeError("combined arm optimization produced non-finite deltas")
     with torch.no_grad():
         arm_after, palm_after, orient_after, penetration_after = (
-            predict_sequence(model, values, delta, args)
+            predict_sequence(kinematics, values, delta, args)
         )
     refined_body = rtmpose.body_with_delta(values["body"], delta)
     metrics = rtmpose.refinement_metrics(
@@ -1171,6 +1353,7 @@ def refine_clip(
     wilor_path: Path,
     output_path: Path,
     smplx_model: torch.nn.Module,
+    kinematics: SMPLXJointKinematics,
     mano_model: torch.nn.Module,
     device: torch.device,
     args: argparse.Namespace,
@@ -1180,12 +1363,18 @@ def refine_clip(
     clip_id, num_frames, fps = rtmpose.validate_fused(fused, fused_path)
     validate_fused_wilor(fused, wilor, fused_path, wilor_path)
     values = rtmpose.fused_tensors(fused, device)
+    if not kinematics.verified:
+        error = verify_kinematics(kinematics, smplx_model, values)
+        tqdm.write(
+            f"[kinematics] fast joint forward pass matches the full SMPL-X "
+            f"model on {clip_id} (max joint error {error:.2e} m)"
+        )
     zero_delta = torch.zeros(
         (num_frames, len(rtmpose.REFINED_BODY_JOINT_INDICES), 3), device=device
     )
     with torch.no_grad():
         initial_arm, _, _, _ = predict_sequence(
-            smplx_model, values, zero_delta, args
+            kinematics, values, zero_delta, args
         )
     supervision = rtmpose_supervision(
         fused,
@@ -1234,7 +1423,7 @@ def refine_clip(
         f"wilor_unbounded={int((unbounded & (wi_weights > 0)).sum())}"
     )
     refined_body, delta, metrics = optimize_arm_pose(
-        smplx_model,
+        kinematics,
         values,
         supervision["targets"],
         rt_weights,
@@ -1270,8 +1459,69 @@ def refine_clip(
     return metrics
 
 
+class FailureLog:
+    """Collects per-clip failures and appends them to <output-root>/failed_clips.txt.
+
+    With ``--strict`` the first failure is re-raised instead, which restores the
+    abort-on-error behaviour of the earlier script versions.
+    """
+
+    def __init__(
+        self, output_root: Path, strict: bool, shard_index: int, num_shards: int
+    ) -> None:
+        filename = FAILED_CLIPS_FILENAME
+        if num_shards > 1:
+            # One file per process so concurrent shards never interleave lines.
+            stem, suffix = filename.rsplit(".", 1)
+            filename = f"{stem}.shard{shard_index}of{num_shards}.{suffix}"
+        self.path = output_root / filename
+        self.strict = strict
+        self.entries: list[tuple[str, str, str]] = []
+
+    def record(self, clip_id: str, stage: str, error: BaseException) -> None:
+        if self.strict:
+            raise error
+        message = " ".join(str(error).split())
+        self.entries.append((clip_id, stage, message))
+        tqdm.write(f"[skip:{stage}] {clip_id}: {message}")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{clip_id}\t{stage}\t{message}\n")
+
+    def summary(self, stage: str) -> str:
+        count = sum(1 for _, entry_stage, _ in self.entries if entry_stage == stage)
+        if count == 0:
+            return ""
+        return f" skipped_{stage}={count} (listed in {self.path})"
+
+
+def validate_clip(
+    fused_path: Path, args: argparse.Namespace
+) -> tuple[str, int, float, int, float, Path, Path, dict[str, np.ndarray]]:
+    """Every input contract for one clip; raises on the first violation."""
+    fused = rtmpose.load_npz(fused_path)
+    clip_id, num_frames, fps = rtmpose.validate_fused(fused, fused_path)
+    pose_path = args.rtmpose_root / f"{clip_id}.pkl"
+    wilor_path = args.wilor_root / fused_path.name
+    wilor = rtmpose.load_npz(wilor_path)
+    validate_fused_wilor(fused, wilor, fused_path, wilor_path)
+    pose_frames = 0
+    pose_fps = float("nan")
+    if not args.no_rtmpose:
+        keypoints, _ = rtmpose.load_rtmpose(pose_path)
+        pose_frames = len(keypoints)
+        _, pose_fps, _ = rtmpose.validate_time_axis(
+            clip_id,
+            num_frames,
+            fps,
+            pose_frames,
+            args.max_duration_error_seconds,
+        )
+    return clip_id, num_frames, fps, pose_frames, pose_fps, pose_path, wilor_path, wilor
+
+
 def validate_all(
-    clip_paths: list[Path], args: argparse.Namespace
+    clip_paths: list[Path], args: argparse.Namespace, failures: FailureLog
 ) -> list[tuple[Path, Path, Path]]:
     validated = []
     pose_counts = []
@@ -1282,24 +1532,20 @@ def validate_all(
     edge_fill_counts = np.zeros(2, dtype=np.int64)
     bar = tqdm(clip_paths, desc="validate", unit="clip", dynamic_ncols=True)
     for fused_path in bar:
-        fused = rtmpose.load_npz(fused_path)
-        clip_id, num_frames, fps = rtmpose.validate_fused(fused, fused_path)
-        pose_path = args.rtmpose_root / f"{clip_id}.pkl"
-        wilor_path = args.wilor_root / fused_path.name
-        wilor = rtmpose.load_npz(wilor_path)
-        validate_fused_wilor(fused, wilor, fused_path, wilor_path)
-        pose_frames = 0
-        pose_fps = float("nan")
-        if not args.no_rtmpose:
-            keypoints, _ = rtmpose.load_rtmpose(pose_path)
-            pose_frames = len(keypoints)
-            _, pose_fps, _ = rtmpose.validate_time_axis(
+        try:
+            (
                 clip_id,
                 num_frames,
                 fps,
                 pose_frames,
-                args.max_duration_error_seconds,
-            )
+                pose_fps,
+                pose_path,
+                wilor_path,
+                wilor,
+            ) = validate_clip(fused_path, args)
+        except PER_CLIP_ERRORS as error:
+            failures.record(fused_path.stem, "validate", error)
+            continue
         weights, allowed, unbounded = bounded_wilor_weights(
             wilor,
             args.wilor_interpolated_weight,
@@ -1330,7 +1576,10 @@ def validate_all(
         f"[validate] clips={len(validated)} fused_frames={sum(fused_counts):,} "
         f"rtmpose_frames={sum(pose_counts):,}"
         + (" (RTMPose disabled)" if args.no_rtmpose else "")
+        + failures.summary("validate")
     )
+    if not validated:
+        raise RuntimeError("every clip failed validation; nothing to refine")
     if not args.no_rtmpose:
         ratios = np.asarray(pose_counts) / np.asarray(fused_counts)
         print(
@@ -1354,6 +1603,16 @@ def main() -> int:
             clip_paths = clip_paths[: args.max_clips]
         if not clip_paths:
             raise RuntimeError(f"No NPZ files found under {args.fused_root}")
+        if args.num_shards > 1:
+            total_clips = len(clip_paths)
+            clip_paths = clip_paths[args.shard_index :: args.num_shards]
+            print(
+                f"[shard] {args.shard_index}/{args.num_shards}: "
+                f"{len(clip_paths)} of {total_clips} clips",
+                flush=True,
+            )
+            if not clip_paths:
+                raise RuntimeError("this shard contains no clips")
         input_roots = [("WiLoR", args.wilor_root)]
         if not args.no_rtmpose:
             input_roots.append(("RTMPose", args.rtmpose_root))
@@ -1366,9 +1625,19 @@ def main() -> int:
         }:
             raise ValueError("Output root must differ from all input roots")
 
-        validated = validate_all(clip_paths, args)
+        failures = FailureLog(
+            args.output_root, args.strict, args.shard_index, args.num_shards
+        )
+        if failures.path.is_file() and not args.strict:
+            print(
+                f"[failures] appending to existing {failures.path}", flush=True
+            )
+        validated = validate_all(clip_paths, args, failures)
         if args.dry_run:
-            print(f"[dry-run] PASS: validated {len(validated)} clip(s)")
+            print(
+                f"[dry-run] PASS: validated {len(validated)} clip(s)"
+                + failures.summary("validate")
+            )
             return 0
 
         device = rtmpose.resolve_device(args.device)
@@ -1387,6 +1656,7 @@ def main() -> int:
             flush=True,
         )
         smplx_model = rtmpose.make_smplx_model(args.smplx_model_root, device)
+        kinematics = SMPLXJointKinematics(smplx_model)
         mano_model = make_mano_model(args.mano_model_path, device)
         processed = 0
         skipped = 0
@@ -1396,16 +1666,29 @@ def main() -> int:
             if output_path.is_file() and not args.overwrite:
                 skipped += 1
                 continue
-            metrics = refine_clip(
-                fused_path,
-                pose_path,
-                wilor_path,
-                output_path,
-                smplx_model,
-                mano_model,
-                device,
-                args,
-            )
+            try:
+                metrics = refine_clip(
+                    fused_path,
+                    pose_path,
+                    wilor_path,
+                    output_path,
+                    smplx_model,
+                    kinematics,
+                    mano_model,
+                    device,
+                    args,
+                )
+            except PER_CLIP_ERRORS as error:
+                failures.record(fused_path.stem, "refine", error)
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                bar.set_postfix(
+                    done=processed,
+                    skip=skipped,
+                    failed=len(failures.entries),
+                    refresh=False,
+                )
+                continue
             processed += 1
             rtmpose_part = (
                 ""
@@ -1442,6 +1725,8 @@ def main() -> int:
         print(
             f"Combined WiLoR+RTMPose refinement complete: "
             f"processed={processed}, skipped={skipped}"
+            + failures.summary("validate")
+            + failures.summary("refine")
         )
         return 0
     except (

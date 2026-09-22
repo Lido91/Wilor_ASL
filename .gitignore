@@ -1,3 +1,13 @@
 pretrained_models/
 mano_v1_2/
 shared_samples/
+
+# Dataset-scale NPZ roots (tens of GB each); regenerate them with the
+# extraction / fusion / refinement scripts instead of committing them.
+wilor_params_interpolated/
+smplx_params_openasl_tianhao_wilor_fused/
+smplx_params_openasl_tianhao_wilor_rtmpose_refined/
+
+# Weights & Biases writes its per-run cache into the working directory, which
+# the launchers set to the repository root.
+wandb/

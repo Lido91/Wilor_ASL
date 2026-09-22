@@ -2,6 +2,8 @@
 """Smooth AIOS person 0 and replace its hands with interpolated WiLoR.
 
 This prototype operates on the packed clip-level NPZ files in ``shared_samples``.
+By default, only clip IDs present in both input directories are processed;
+unpaired files are reported and skipped.
 AIOS arrays are packed over all detected people, so person 0 for frame ``t`` is
 stored at ``person_offsets[t]`` rather than necessarily at row ``t``.
 
@@ -53,7 +55,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create temporally smoothed AIOS person-0 clips whose hand poses "
-            "come from interpolated WiLoR."
+            "come from interpolated WiLoR. Process matching clip IDs only; "
+            "skip unpaired files."
         )
     )
     parser.add_argument("--wilor-root", type=Path, default=DEFAULT_WILOR_ROOT)
@@ -210,12 +213,20 @@ def validate_clip_sets(
     if requested_clip_ids is None:
         only_wilor = sorted(wilor_ids - aios_ids)
         only_aios = sorted(aios_ids - wilor_ids)
+        matched_ids = sorted(wilor_ids & aios_ids)
+        print(
+            f"Clip pairing: matched={len(matched_ids):,}, "
+            f"only WiLoR={len(only_wilor):,}, only AIOS={len(only_aios):,}",
+            flush=True,
+        )
         if only_wilor or only_aios:
-            raise ValueError(
-                "Sample clip sets differ: "
+            print(
+                "Skipping unpaired clips (up to 10 examples per source): "
                 f"only WiLoR={only_wilor[:10]}, only AIOS={only_aios[:10]}"
             )
-        return sorted(wilor_ids)
+        if not matched_ids:
+            raise ValueError("No matching clip IDs found in the input directories")
+        return matched_ids
 
     if len(requested_clip_ids) != len(set(requested_clip_ids)):
         raise ValueError("--clip-id values must not contain duplicates")

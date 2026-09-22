@@ -2,30 +2,51 @@
   __import__("pkg_resources").declare_namespace(__name__)
 /home/student/hwu/miniconda3/envs/wilor/lib/python3.10/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
   warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
-[2026-08-04 03:09:20] worker shard=0/2, device=cuda:0, fast=True
+[2026-09-22 02:49:01] worker shard=0/2, device=cuda:0, fast=True
 Loading  pretrained_models/wilor_final.ckpt
 Lightning automatically upgraded your loaded checkpoint from v1.8.1 to v2.0.9. To apply the upgrade to your files permanently, run `python -m pytorch_lightning.utilities.upgrade_checkpoint --file pretrained_models/wilor_final.ckpt`
 WARNING: You are using a MANO model, with only 10 shape coefficients.
-[2026-08-04 03:09:28] split=youtube: 21/32 clips assigned; output=/data/hwu/youtube_dataset/clip_fps24_img_0_wilor_out
-[2026-08-04 03:09:39] DONE youtube/_JzlJsE8mhI-078: frames=194, hands=316, clip_fps=18.09; worker_total clips=1, frames=194, fps=17.01, failed=0, skipped=0
-[2026-08-04 03:09:45] DONE youtube/ZGi1h1R2CDI-002: frames=109, hands=211, clip_fps=16.46; worker_total clips=2, frames=303, fps=16.81, failed=0, skipped=0
-[2026-08-04 03:09:46] DONE youtube/jZP5thQ22S0-045: frames=39, hands=78, clip_fps=30.37; worker_total clips=3, frames=342, fps=17.71, failed=0, skipped=0
-[2026-08-04 03:09:54] DONE youtube/ZGi1h1R2CDI-016: frames=122, hands=244, clip_fps=15.81; worker_total clips=4, frames=464, fps=17.16, failed=0, skipped=0
-[2026-08-04 03:10:01] DONE youtube/ZGi1h1R2CDI-020: frames=108, hands=216, clip_fps=15.91; worker_total clips=5, frames=572, fps=16.91, failed=0, skipped=0
-[2026-08-04 03:10:06] DONE youtube/jzUTBq9-P1U-004: frames=96, hands=140, clip_fps=19.99; worker_total clips=6, frames=668, fps=17.29, failed=0, skipped=0
-[2026-08-04 03:10:10] DONE youtube/ZGi1h1R2CDI-026: frames=111, hands=222, clip_fps=27.29; worker_total clips=7, frames=779, fps=18.24, failed=0, skipped=0
-[2026-08-04 03:10:15] DONE youtube/jzUTBq9-P1U-018: frames=102, hands=162, clip_fps=18.03; worker_total clips=8, frames=881, fps=18.22, failed=0, skipped=0
-[2026-08-04 03:10:22] DONE youtube/ZGi1h1R2CDI-030: frames=119, hands=238, clip_fps=17.79; worker_total clips=9, frames=1000, fps=18.17, failed=0, skipped=0
-[2026-08-04 03:10:28] DONE youtube/ZGi1h1R2CDI-034: frames=86, hands=172, clip_fps=15.84; worker_total clips=10, frames=1086, fps=17.96, failed=0, skipped=0
-[2026-08-04 03:10:30] DONE youtube/jzUTBq9-P1U-027: frames=62, hands=102, clip_fps=23.91; worker_total clips=11, frames=1148, fps=18.20, failed=0, skipped=0
-[2026-08-04 03:10:33] DONE youtube/ZGi1h1R2CDI-041: frames=60, hands=120, clip_fps=23.37; worker_total clips=12, frames=1208, fps=18.40, failed=0, skipped=0
-[2026-08-04 03:10:38] DONE youtube/jzUTBq9-P1U-029: frames=130, hands=240, clip_fps=24.64; worker_total clips=13, frames=1338, fps=18.87, failed=0, skipped=0
-[2026-08-04 03:10:39] DONE youtube/ZGORceOTG0A-002: frames=30, hands=38, clip_fps=36.23; worker_total clips=14, frames=1368, fps=19.07, failed=0, skipped=0
-[2026-08-04 03:10:50] DONE youtube/jzUTBq9-P1U-039: frames=233, hands=391, clip_fps=20.74; worker_total clips=15, frames=1601, fps=19.29, failed=0, skipped=0
-[2026-08-04 03:10:52] DONE youtube/jzUTBq9-P1U-041: frames=54, hands=78, clip_fps=23.42; worker_total clips=16, frames=1655, fps=19.40, failed=0, skipped=0
-[2026-08-04 03:10:56] DONE youtube/ZgUBU0NNEDU-025: frames=192, hands=194, clip_fps=54.29; worker_total clips=17, frames=1847, fps=20.79, failed=0, skipped=0
-[2026-08-04 03:10:57] DONE youtube/jzVjTSQk70w-000: frames=31, hands=62, clip_fps=34.00; worker_total clips=18, frames=1878, fps=20.93, failed=0, skipped=0
-[2026-08-04 03:11:07] DONE youtube/ZgUBU0NNEDU-029: frames=164, hands=328, clip_fps=16.09; worker_total clips=19, frames=2042, fps=20.43, failed=0, skipped=0
-[2026-08-04 03:11:14] DONE youtube/Jz-yfXPFXiw-003: frames=97, hands=194, clip_fps=13.38; worker_total clips=20, frames=2139, fps=19.95, failed=0, skipped=0
-[2026-08-04 03:11:17] DONE youtube/ZHcFnYv59Ts-033: frames=70, hands=138, clip_fps=22.15; worker_total clips=21, frames=2209, fps=20.02, failed=0, skipped=0
-[2026-08-04 03:11:17] COMPLETE clips=21, frames=2209, hands=3884, failed=0, skipped=0, seconds=110.4
+[2026-09-22 02:49:14] split=youtube: mode=video, 110393/220940 clips assigned; output=/data/hwu/youtube_dataset/clip_fps24_without_openasl_wilor_out
+[2026-09-22 02:49:14] video frame names: '000000.jpg' onward
+[2026-09-22 02:49:20] DONE youtube/--6bmFM9wT4-002: frames=28, hands=46, clip_fps=4.43; worker_total clips=1, frames=28, fps=2.56, failed=0, skipped=0
+[2026-09-22 02:49:29] DONE youtube/--6bmFM9wT4-066: frames=165, hands=329, clip_fps=19.20; worker_total clips=2, frames=193, fps=9.88, failed=0, skipped=0
+[2026-09-22 02:49:31] DONE youtube/--6bmFM9wT4-076: frames=42, hands=84, clip_fps=19.60; worker_total clips=3, frames=235, fps=10.84, failed=0, skipped=0
+[2026-09-22 02:49:39] DONE youtube/--7t6QjMwpY-000: frames=228, hands=348, clip_fps=28.31; worker_total clips=4, frames=463, fps=15.57, failed=0, skipped=0
+[2026-09-22 02:49:43] DONE youtube/--7t6QjMwpY-001: frames=80, hands=161, clip_fps=20.52; worker_total clips=5, frames=543, fps=16.15, failed=0, skipped=0
+[2026-09-22 02:49:49] DONE youtube/--7t6QjMwpY-009: frames=146, hands=292, clip_fps=23.73; worker_total clips=6, frames=689, fps=17.32, failed=0, skipped=0
+[2026-09-22 02:49:55] DONE youtube/--7t6QjMwpY-010: frames=134, hands=273, clip_fps=21.69; worker_total clips=7, frames=823, fps=17.91, failed=0, skipped=0
+[2026-09-22 02:50:02] DONE youtube/--7t6QjMwpY-013: frames=166, hands=311, clip_fps=24.30; worker_total clips=8, frames=989, fps=18.73, failed=0, skipped=0
+[2026-09-22 02:50:07] DONE youtube/--7t6QjMwpY-014: frames=105, hands=210, clip_fps=22.15; worker_total clips=9, frames=1094, fps=19.02, failed=0, skipped=0
+[2026-09-22 02:50:20] DONE youtube/--7t6QjMwpY-016: frames=304, hands=557, clip_fps=23.23; worker_total clips=10, frames=1398, fps=19.80, failed=0, skipped=0
+[2026-09-22 02:50:25] DONE youtube/--7t6QjMwpY-018: frames=119, hands=242, clip_fps=21.72; worker_total clips=11, frames=1517, fps=19.93, failed=0, skipped=0
+[2026-09-22 02:50:37] DONE youtube/--7t6QjMwpY-020: frames=208, hands=413, clip_fps=18.00; worker_total clips=12, frames=1725, fps=19.68, failed=0, skipped=0
+[2026-09-22 02:50:42] DONE youtube/--7t6QjMwpY-022: frames=196, hands=261, clip_fps=35.89; worker_total clips=13, frames=1921, fps=20.63, failed=0, skipped=0
+[2026-09-22 02:50:47] DONE youtube/--7t6QjMwpY-023: frames=110, hands=177, clip_fps=25.82; worker_total clips=14, frames=2031, fps=20.86, failed=0, skipped=0
+[2026-09-22 02:50:56] DONE youtube/--7t6QjMwpY-024: frames=239, hands=465, clip_fps=24.49; worker_total clips=15, frames=2270, fps=21.19, failed=0, skipped=0
+[2026-09-22 02:51:01] DONE youtube/--7t6QjMwpY-028: frames=123, hands=232, clip_fps=24.14; worker_total clips=16, frames=2393, fps=21.32, failed=0, skipped=0
+[2026-09-22 02:51:08] DONE youtube/--7t6QjMwpY-031: frames=145, hands=290, clip_fps=21.98; worker_total clips=17, frames=2538, fps=21.36, failed=0, skipped=0
+[2026-09-22 02:51:15] DONE youtube/--pq96V-6DA-003: frames=155, hands=308, clip_fps=20.64; worker_total clips=18, frames=2693, fps=21.32, failed=0, skipped=0
+[2026-09-22 02:51:22] DONE youtube/--pq96V-6DA-005: frames=118, hands=236, clip_fps=18.09; worker_total clips=19, frames=2811, fps=21.16, failed=0, skipped=0
+[2026-09-22 02:51:30] DONE youtube/--pq96V-6DA-007: frames=136, hands=272, clip_fps=16.06; worker_total clips=20, frames=2947, fps=20.85, failed=0, skipped=0
+[2026-09-22 02:51:37] DONE youtube/--pq96V-6DA-009: frames=130, hands=260, clip_fps=20.58; worker_total clips=21, frames=3077, fps=20.84, failed=0, skipped=0
+[2026-09-22 02:51:39] DONE youtube/--pq96V-6DA-011: frames=43, hands=86, clip_fps=16.24; worker_total clips=22, frames=3120, fps=20.76, failed=0, skipped=0
+[2026-09-22 02:51:43] DONE youtube/--pq96V-6DA-015: frames=62, hands=103, clip_fps=18.39; worker_total clips=23, frames=3182, fps=20.71, failed=0, skipped=0
+[2026-09-22 02:51:50] DONE youtube/--pq96V-6DA-020: frames=150, hands=300, clip_fps=20.14; worker_total clips=24, frames=3332, fps=20.68, failed=0, skipped=0
+[2026-09-22 02:51:58] DONE youtube/--pq96V-6DA-022: frames=109, hands=219, clip_fps=14.85; worker_total clips=25, frames=3441, fps=20.43, failed=0, skipped=0
+[2026-09-22 02:51:59] DONE youtube/--pq96V-6DA-023: frames=29, hands=60, clip_fps=18.15; worker_total clips=26, frames=3470, fps=20.41, failed=0, skipped=0
+[2026-09-22 02:52:07] DONE youtube/--pq96V-6DA-026: frames=143, hands=287, clip_fps=18.42; worker_total clips=27, frames=3613, fps=20.32, failed=0, skipped=0
+[2026-09-22 02:52:10] DONE youtube/--pq96V-6DA-028: frames=57, hands=110, clip_fps=20.31; worker_total clips=28, frames=3670, fps=20.32, failed=0, skipped=0
+[2026-09-22 02:52:16] DONE youtube/--pq96V-6DA-030: frames=99, hands=198, clip_fps=16.82; worker_total clips=29, frames=3769, fps=20.21, failed=0, skipped=0
+[2026-09-22 02:52:21] DONE youtube/--pq96V-6DA-031: frames=95, hands=195, clip_fps=16.96; worker_total clips=30, frames=3864, fps=20.11, failed=0, skipped=0
+[2026-09-22 02:52:30] DONE youtube/--pq96V-6DA-032: frames=168, hands=334, clip_fps=19.65; worker_total clips=31, frames=4032, fps=20.09, failed=0, skipped=0
+[2026-09-22 02:52:34] DONE youtube/--pq96V-6DA-033: frames=75, hands=136, clip_fps=18.35; worker_total clips=32, frames=4107, fps=20.06, failed=0, skipped=0
+[2026-09-22 02:52:38] DONE youtube/--pq96V-6DA-034: frames=79, hands=158, clip_fps=19.98; worker_total clips=33, frames=4186, fps=20.06, failed=0, skipped=0
+[2026-09-22 02:52:39] DONE youtube/--pq96V-6DA-035: frames=22, hands=44, clip_fps=16.69; worker_total clips=34, frames=4208, fps=20.04, failed=0, skipped=0
+[2026-09-22 02:52:44] DONE youtube/--pq96V-6DA-037: frames=96, hands=192, clip_fps=20.27; worker_total clips=35, frames=4304, fps=20.04, failed=0, skipped=0
+[2026-09-22 02:52:50] DONE youtube/--pq96V-6DA-038: frames=106, hands=213, clip_fps=16.84; worker_total clips=36, frames=4410, fps=19.95, failed=0, skipped=0
+[2026-09-22 02:52:55] DONE youtube/--pq96V-6DA-039: frames=103, hands=206, clip_fps=19.56; worker_total clips=37, frames=4513, fps=19.94, failed=0, skipped=0
+[2026-09-22 02:53:01] DONE youtube/--pq96V-6DA-040: frames=123, hands=247, clip_fps=20.61; worker_total clips=38, frames=4636, fps=19.96, failed=0, skipped=0
+[2026-09-22 02:53:12] DONE youtube/-05MRmp1i4w-000: frames=258, hands=318, clip_fps=24.41; worker_total clips=39, frames=4894, fps=20.15, failed=0, skipped=0
+[2026-09-22 02:53:20] DONE youtube/-05MRmp1i4w-004: frames=168, hands=279, clip_fps=22.19; worker_total clips=40, frames=5062, fps=20.21, failed=0, skipped=0
+[2026-09-22 02:53:42] DONE youtube/-05MRmp1i4w-005: frames=331, hands=611, clip_fps=14.93; worker_total clips=41, frames=5393, fps=19.78, failed=0, skipped=0
+[2026-09-22 02:54:05] DONE youtube/-05MRmp1i4w-006: frames=336, hands=645, clip_fps=14.21; worker_total clips=42, frames=5729, fps=19.34, failed=0, skipped=0

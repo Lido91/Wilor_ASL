@@ -5,10 +5,13 @@ This document explains how to process two ASL/sign-language image datasets in th
 - How2Sign: `/data/hwu/how2sign`
 - YouTube ASL clips: `/data/hwu/youtube_dataset/clip_fps24_img_0`
 
-The complete workflow has two stages:
+The complete workflow has three stages:
 
 1. GPU inference: detect hands and save raw per-frame WiLoR/MANO PKLs.
 2. CPU postprocessing: organize each frame into fixed `[left, right]` slots and temporally interpolate missing hands.
+3. GPU refinement: fuse the interpolated hands into whole-body SMPL-X and jointly refine the arms against WiLoR and RTMPose.
+
+Stages 1 and 2 are documented in sections 1 to 10. Stage 3 is documented in section 11 and runs on the OpenASL clip set.
 
 Main scripts:
 
@@ -16,9 +19,12 @@ Main scripts:
 - [`interpolate_how2sign_wilor.py`](./interpolate_how2sign_wilor.py): CPU left/right alignment and temporal interpolation.
 - [`run_how2sign_wilor_2gpu.sh`](./run_how2sign_wilor_2gpu.sh): background launcher for How2Sign.
 - [`run_youtube_wilor_2gpu.sh`](./run_youtube_wilor_2gpu.sh): background launcher for the YouTube dataset.
+- [`fuse_shared_aios_wilor.py`](./fuse_shared_aios_wilor.py): merge AIOS person-0 SMPL-X with interpolated WiLoR hands into per-clip NPZ. The output format is described in [`FUSED_AIOS_WILOR_NPZ_FORMAT.md`](./FUSED_AIOS_WILOR_NPZ_FORMAT.md).
+- [`refine_aios_arms_with_wilor_rtmpose.py`](./refine_aios_arms_with_wilor_rtmpose.py): joint WiLoR + RTMPose arm refinement.
+- [`run_refine_wilor_rtmpose.sh`](./run_refine_wilor_rtmpose.sh): multi-GPU launcher for the refinement.
 - [`demo.py`](./demo.py): visualization for a single clip.
 
-Although the two launcher filenames retain the `_2gpu` suffix, they support any number of GPUs.
+Although the two extraction launchers retain the `_2gpu` suffix, they support any number of GPUs.
 
 ## 1. Environment and Required Files
 
@@ -301,6 +307,94 @@ CUDA_VISIBLE_DEVICES=2 \
     --fast
 ```
 
+### 5.5 Video-file input mode
+
+When each clip is one video file instead of a directory of frames, pass `--video`:
+
+```bash
+bash run_youtube_wilor_2gpu.sh --video 0 1
+```
+
+Options must precede the positional GPU IDs.
+
+Each mode has its own default input root, so `--input-root` is only needed for a different dataset. The output root is always the input root with `_wilor_out` appended unless `--output-root` overrides it, which keeps each mode's results beside its own input:
+
+| Mode | Default input root | Resulting output root |
+|---|---|---|
+| `images`, `auto` | `/data/hwu/youtube_dataset/clip_fps24_without_openasl` | `..._without_openasl_wilor_out` |
+| `video` | `/data/hwu/youtube_dataset/clip_fps24` | `clip_fps24_wilor_out` |
+
+Both defaults are plain variables at the top of the launcher, `DEFAULT_IMAGE_INPUT_ROOT` and `DEFAULT_VIDEO_INPUT_ROOT`. Another root is passed as usual, and its output follows along:
+
+```bash
+bash run_youtube_wilor_2gpu.sh --video \
+    --input-root /data/hwu/youtube_dataset/clip_fps24_other 0 1
+```
+
+`--input-mode auto` decides between the two layouts by inspecting the input root, so it uses the image default. It fails deliberately if a root holds both clip directories and video files; name the mode explicitly in that case.
+
+#### Frame naming
+
+In video mode there are no input filenames, so each frame name is generated from its decoded index, and that name's stem becomes the PKL name. The defaults are:
+
+```text
+--frame-name-template '{index:06d}.jpg'
+--frame-index-start   0
+```
+
+This matters when the same clips were, or will be, extracted from images as well. If the image-based naming is ffmpeg's one-based `%06d`, match it explicitly:
+
+```bash
+bash run_youtube_wilor_2gpu.sh --video --frame-index-start 1 0 1
+```
+
+A mismatch does not fail loudly. It shifts every PKL name by one frame, and the problem only surfaces later during fusion.
+
+### 5.6 Live progress and Weights & Biases
+
+By default the launcher backgrounds every worker with `nohup` and sends its output to a log file. Two options change that.
+
+`--foreground` (short form `--fg`) keeps the workers attached to the terminal, writes no log file, and shows a tqdm progress bar per worker. Ctrl-C stops them all.
+
+`--wandb` streams throughput and detection statistics to Weights & Biases. Each shard opens its own run, and the runs are grouped so one extraction's shards appear together.
+
+The two combine:
+
+```bash
+bash run_youtube_wilor_2gpu.sh --fg --wandb --video 0 1
+```
+
+Log in once before the first W&B run:
+
+```bash
+wandb login
+```
+
+The progress bar looks like this, pinned to the bottom of the terminal while the per-clip `DONE` lines scroll above it:
+
+```text
+youtube shard0:  12%|████▌      | 2698/22460 [04:11<30:42, 10.7clip/s, done=2698, skip=0, fail=0, fps=241.3]
+```
+
+The denominator is the clip count assigned to **that shard**, not the whole dataset. Two shards each reaching 100% means the dataset is done.
+
+Both workers draw their bars on the same terminal and overwrite each other. For one clean bar per view, give each terminal a single GPU. Note that each such command is then `--num-shards 1`, so both terminals walk the same clip list; the `.complete` marker keeps the result correct, but the two workers compete for the same clips instead of dividing them.
+
+#### What is sent to W&B
+
+| Event | Keys |
+|---|---|
+| Split start | `split/assigned_clips`, `split/total_clips` |
+| Each finished clip | `clip/fps`, `clip/hands_per_frame`, `progress/mean_fps`, `progress/clips_done`, `gpu/max_memory_gb` |
+| Each failed clip | `failure/clip_id`, `failure/reason` |
+| Run end (summary) | `clips_processed`, `frames_processed`, `hands_detected`, `elapsed_seconds`, `mean_fps`, `exit_code` |
+
+Default run group: the split name plus the input root name. Default run name: `shard<index>of<count>`. Override with `--wandb-project` and `--wandb-run-group`.
+
+One point per finished clip is a lot over tens of thousands of clips. To thin it out, call the extractor directly with `--wandb-log-every-n-clips 50`; the launcher forwards only `--wandb`, `--wandb-project`, and `--wandb-run-group`.
+
+Backgrounded runs are unaffected by the tqdm change. The bar is disabled automatically when stdout is not a terminal, so log files keep the same plain timestamped lines as before.
+
 ## 6. Raw Per-Frame PKL Fields
 
 For a frame with `N` detected hands:
@@ -503,9 +597,123 @@ print(data["interpolated_mask"])
 print(data["valid_mask"])
 ```
 
-## 11. Resuming Interrupted Runs
+## 11. SMPL-X Arm Refinement (WiLoR + RTMPose)
 
-### 11.1 GPU extraction
+This stage is separate from the two above and runs on the OpenASL clip set, not on How2Sign or YouTube. It takes whole-body SMPL-X clips that already carry WiLoR hands and jointly refines the arms so the SMPL-X wrists line up with the WiLoR hands and the RTMPose arm keypoints.
+
+### 11.1 Inputs and outputs
+
+Produced earlier by [`fuse_shared_aios_wilor.py`](./fuse_shared_aios_wilor.py) and the interpolation stage:
+
+```text
+wilor_params_interpolated/                           28G
+smplx_params_openasl_tianhao_wilor_fused/            13G
+/home/student/hwu/Workplace/Uni-Sign/data/OpenASL/pose-rtmpose-192
+```
+
+Written by this stage:
+
+```text
+smplx_params_openasl_tianhao_wilor_rtmpose_refined/  12G
+```
+
+The three repository-root directories are real directories, not symlinks, and all of them are in `.gitignore`. The script defaults point at `shared_samples/`, which holds only the small visual-validation subset, so a full run must pass the roots explicitly. The launcher already defaults to the full roots.
+
+Only `smplx_body_pose` changes. Finger pose, camera, shape, root, face, and every non-arm body joint are copied through unchanged.
+
+### 11.2 Launcher
+
+[`run_refine_wilor_rtmpose.sh`](./run_refine_wilor_rtmpose.sh) starts one worker per shard and spreads the shards over the given GPUs.
+
+```bash
+bash run_refine_wilor_rtmpose.sh --help
+```
+
+Validate every input first; this loads no SMPL-X or MANO model and is fast:
+
+```bash
+bash run_refine_wilor_rtmpose.sh --extra "--dry-run"
+```
+
+Then run it:
+
+```bash
+bash run_refine_wilor_rtmpose.sh --gpus 1,2
+```
+
+### 11.3 Choosing GPUs
+
+Three equivalent forms. These are physical card numbers as shown by `nvidia-smi`; each worker receives its own `CUDA_VISIBLE_DEVICES` and therefore passes `--device cuda:0` internally.
+
+```bash
+bash run_refine_wilor_rtmpose.sh 2 3          # positional, after all options
+bash run_refine_wilor_rtmpose.sh --gpus 2,3   # order-independent
+GPUS=2,3 bash run_refine_wilor_rtmpose.sh     # environment variable
+```
+
+The default is GPUs 0 and 1. Card numbers need not be contiguous: `--gpus 1,4,7` is fine.
+
+### 11.4 Shard count independent of GPU count
+
+Unlike the extraction launchers, the number of workers here is set separately from the number of cards. Shard `i` runs on `GPU_IDS[i % number_of_gpus]`.
+
+| Command | Result |
+|---|---|
+| `--gpus 2,3` | 2 workers, one per card |
+| `--gpus 3 --shards 4` | 4 workers all on GPU 3 |
+| `--gpus 2,3 --shards 6` | GPU 2 takes shards 0, 2, 4; GPU 3 takes 1, 3, 5 |
+
+The optimizer uses a forward-kinematics-only pass and never computes vertices, so GPU load per clip is low and the bottleneck is often NPZ and pickle I/O. If `nvidia-smi` shows both cards idling, more shards than GPUs is the cheaper win. Limit the CPU threads when packing workers onto one card, otherwise each process tries to use every core:
+
+```bash
+bash run_refine_wilor_rtmpose.sh --shards 6 --extra "--torch-threads 2" 2 3
+```
+
+Each worker loads its own SMPL-X and MANO model, so check free memory before packing many onto one card.
+
+### 11.5 Live progress instead of logs
+
+The refinement script uses tqdm already. `--fg` keeps the workers on the terminal with no log file and no `nohup`; Ctrl-C stops them.
+
+```bash
+bash run_refine_wilor_rtmpose.sh --fg --gpus 1,2
+```
+
+Several foreground workers overwrite each other's bars. `--only-shard N` starts just one shard of the split, so each terminal gets one clean bar while the two terminals still cover disjoint clips:
+
+```bash
+# terminal 1
+bash run_refine_wilor_rtmpose.sh --fg --gpus 1,2 --shards 2 --only-shard 0
+# terminal 2
+bash run_refine_wilor_rtmpose.sh --fg --gpus 1,2 --shards 2 --only-shard 1
+```
+
+This differs from splitting the extraction across terminals, where each command is `--num-shards 1` and the workers duplicate each other's clip list.
+
+### 11.6 Resuming
+
+Rerun the same command. Nothing else is needed, and `--overwrite` must not be used for a normal resume.
+
+- Clips whose output NPZ already exists are skipped and counted in the final `skipped=` total.
+- Output is written to a temporary file in the destination directory and then atomically renamed, so an interrupted write never leaves a truncated NPZ that a later run would mistake for finished work.
+- The clip that was mid-optimization restarts from iteration 1. There is no checkpoint inside a clip, so at most one clip's work is lost.
+- Keep `--shards` the same across restarts. A different count re-splits the clip list and renames the log and PID files. The result stays correct, since the skip test only asks whether the output file exists.
+
+Two costs are paid again on every restart. The validation pass runs over the whole shard before any skipping, reloading every fused NPZ, WiLoR NPZ, and RTMPose pickle, including the clips already finished. And `failed_clips.shard<i>of<n>.txt` is opened in append mode, so a clip that keeps failing validation gains one line per restart; pipe through `sort -u` when counting failures.
+
+A `SIGKILL` (`kill -9`, or the OOM killer) skips the temporary-file cleanup and can leave hidden `.<clip_id>.*.tmp.npz` files in the output directory. They do not affect resuming, because clips are discovered from the fused root rather than the output directory. To clear them:
+
+```bash
+find smplx_params_openasl_tianhao_wilor_rtmpose_refined -name '.*.tmp.npz' -delete
+```
+
+### 11.7 Per-clip failures
+
+By default a clip that fails validation or refinement is skipped, reported on the console, and appended to `<output-root>/failed_clips.shard<i>of<n>.txt` as one `<clip_id>\t<stage>\t<error>` line. This keeps a whole-dataset run from being lost to one truncated or misaligned clip. Pass `--extra "--strict"` to abort on the first failure instead.
+
+## 12. Resuming Interrupted Runs
+
+### 12.1 GPU extraction
 
 - Each frame is first written to a temporary PKL and then atomically moved into place.
 - A `.complete` marker is created after the entire clip finishes.
@@ -520,7 +728,7 @@ bash run_how2sign_wilor_2gpu.sh 2
 bash run_youtube_wilor_2gpu.sh 2
 ```
 
-### 11.2 CPU interpolation
+### 12.2 CPU interpolation
 
 - Only raw clips with `.complete` are processed.
 - Interpolated outputs have their own `.complete` markers.
@@ -528,28 +736,40 @@ bash run_youtube_wilor_2gpu.sh 2
 - An incomplete output clip writes only missing output PKLs.
 - Do not use `--overwrite` for a normal resume.
 
-## 12. Monitoring Progress
+### 12.3 Arm refinement
 
-### 12.1 Processes and GPUs
+Resuming for stage 3 works differently, on whole output NPZ files rather than `.complete` markers. See section 11.6.
+
+## 13. Monitoring Progress
+
+### 13.1 Processes and GPUs
 
 ```bash
 ps -ef | grep extract_how2sign_wilor.py
 nvidia-smi
 ```
 
-### 12.2 How2Sign logs
+### 13.2 How2Sign logs
 
 ```bash
 tail -f logs/how2sign_wilor/worker_0.log
 ```
 
-### 12.3 YouTube logs
+### 13.3 YouTube logs
 
 ```bash
 tail -f logs/youtube_wilor/worker_0.log
 ```
 
-### 12.4 Raw PKL and completed-clip counts
+Video-mode runs use a separate directory:
+
+```bash
+tail -f logs/youtube_wilor_video/worker_0.log
+```
+
+Runs started with `--fg` write no log at all; their output is on the terminal.
+
+### 13.4 Raw PKL and completed-clip counts
 
 How2Sign test:
 
@@ -571,7 +791,7 @@ find /data/hwu/youtube_dataset/clip_fps24_img_0_wilor_out/wilor_params \
     -type f -name '.complete' | wc -l
 ```
 
-### 12.5 Interpolation progress
+### 13.5 Interpolation progress
 
 ```bash
 find /data/hwu/youtube_dataset/clip_fps24_img_0_wilor_out/wilor_params_interpolated \
@@ -583,7 +803,22 @@ find /data/hwu/youtube_dataset/clip_fps24_img_0_wilor_out/wilor_params_interpola
 
 Running `find` over millions of small files may take a long time.
 
-## 13. Single-Clip Interpolation Visualization
+### 13.6 Refined clip count
+
+Refinement writes one NPZ per clip, so counting is cheap:
+
+```bash
+ls smplx_params_openasl_tianhao_wilor_rtmpose_refined/*.npz | wc -l
+ls smplx_params_openasl_tianhao_wilor_fused/*.npz | wc -l
+```
+
+Failures across all shards:
+
+```bash
+sort -u smplx_params_openasl_tianhao_wilor_rtmpose_refined/failed_clips.shard*.txt | wc -l
+```
+
+## 14. Single-Clip Interpolation Visualization
 
 Use `demo.py` to inspect one clip. Do not use it as a replacement for the batch parameter extractor.
 
@@ -628,7 +863,7 @@ purple = real detection in the current frame
 orange = result interpolated from neighboring frames
 ```
 
-## 14. MANO Parameter Notes
+## 15. MANO Parameter Notes
 
 - `hand_pose [45]` contains the final, complete rotations for 15 local MANO joints. It is not a residual with the MANO mean subtracted.
 - Do not add the MANO hand mean again during reconstruction.
@@ -637,7 +872,7 @@ orange = result interpolated from neighboring frames
 - Set `flat_hand_mean=True` when reconstructing from axis-angle values.
 - For the most accurate reconstruction, use `hand_pose_rotmat` and `global_orient_rotmat` directly.
 
-## 15. Frequently Asked Questions
+## 16. Frequently Asked Questions
 
 ### Why is `processing_fps` much higher than 24?
 

@@ -9,6 +9,12 @@ Each pickle is a dictionary whose first dimension is the number of hands in
 that frame.  Frames with no detected hands still receive a pickle containing
 shape-stable empty arrays.  Writes are atomic and resumable at frame level; a
 ``.complete`` marker avoids scanning completed clips on later runs.
+
+A clip may be supplied either as a directory of frame images or as a single
+video file (one video per clip).  ``--input-mode`` selects between the two;
+``auto`` inspects ``--input-root``.  In video mode frame names come from
+``--frame-name-template`` so the emitted pickles can match an existing
+image-based extraction of the same clips.
 """
 
 from __future__ import annotations
@@ -21,11 +27,14 @@ import tempfile
 import time
 import traceback
 from pathlib import Path
+from typing import Iterator, NamedTuple
 
+import cv2
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 from torch.utils.data._utils.collate import default_collate
+from tqdm.auto import tqdm
 from ultralytics import YOLO
 
 from wilor.datasets.vitdet_dataset import ViTDetDataset
@@ -35,8 +44,30 @@ from wilor.utils.renderer import cam_crop_to_full
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg"}
 DEFAULT_DATASET_ROOT = Path("/data/hwu/how2sign")
 DEFAULT_SPLITS = ("test", "val", "train")
+DEFAULT_FRAME_NAME_TEMPLATE = "{index:06d}.jpg"
+DEFAULT_WANDB_PROJECT = "wilor-extract"
+
+
+class ClipSource(NamedTuple):
+    """One clip, either an image directory or a single video file."""
+
+    clip_id: str
+    path: Path
+    is_video: bool
+
+
+class FrameItem(NamedTuple):
+    """One frame handed to the detector: a file path or a decoded BGR array."""
+
+    name: str
+    source: str | np.ndarray
+
+    @property
+    def stem(self) -> str:
+        return Path(self.name).stem
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,13 +104,55 @@ def parse_args() -> argparse.Namespace:
         help="Metadata/sharding name used with direct --input-root mode.",
     )
     parser.add_argument(
+        "--input-mode",
+        choices=("auto", "images", "video"),
+        default="auto",
+        help=(
+            "How each clip is stored under the input root: 'images' means one "
+            "subdirectory of frames per clip, 'video' means one video file per "
+            "clip, 'auto' (default) inspects the root and picks whichever is "
+            "present."
+        ),
+    )
+    parser.add_argument(
+        "--video-suffix",
+        dest="video_suffixes",
+        action="append",
+        default=None,
+        metavar="SUFFIX",
+        help=(
+            "Video extension to accept in video mode; may be repeated. "
+            f"Default: {' '.join(sorted(VIDEO_SUFFIXES))}."
+        ),
+    )
+    parser.add_argument(
+        "--frame-name-template",
+        default=DEFAULT_FRAME_NAME_TEMPLATE,
+        help=(
+            "Video mode only. Frame file name built from the decoded frame "
+            "index, e.g. 'frame_{index:06d}.jpg'. The stem becomes the pickle "
+            "name, so set this to match an existing image-based extraction. "
+            f"Default: '{DEFAULT_FRAME_NAME_TEMPLATE}'."
+        ),
+    )
+    parser.add_argument(
+        "--frame-index-start",
+        type=int,
+        default=0,
+        help=(
+            "Video mode only. Index given to the first decoded frame; use 1 "
+            "for ffmpeg-style one-based numbering. Default: 0."
+        ),
+    )
+    parser.add_argument(
         "--clip-id",
         dest="clip_ids",
         action="append",
         default=None,
         metavar="CLIP_ID",
         help=(
-            "Only process this clip directory name; may be repeated. "
+            "Only process this clip; may be repeated. Give the directory name "
+            "in image mode or the video file stem in video mode. "
             "This option is available in direct --input-root mode."
         ),
     )
@@ -170,6 +243,63 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("pretrained_models/detector.pt"),
     )
+
+    wandb_group = parser.add_argument_group("Weights & Biases monitoring")
+    wandb_group.add_argument(
+        "--wandb",
+        action="store_true",
+        help=(
+            "Stream progress, throughput and detection statistics to Weights & "
+            "Biases. Each worker opens its own run, grouped so the shards of "
+            "one extraction appear together."
+        ),
+    )
+    wandb_group.add_argument(
+        "--wandb-project",
+        default=DEFAULT_WANDB_PROJECT,
+        help=f"W&B project. Default: '{DEFAULT_WANDB_PROJECT}'.",
+    )
+    wandb_group.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="W&B entity (team or user). Default: your W&B default.",
+    )
+    wandb_group.add_argument(
+        "--wandb-run-group",
+        default=None,
+        help=(
+            "W&B group shared by every shard of one extraction. "
+            "Default: the split name plus the input root name."
+        ),
+    )
+    wandb_group.add_argument(
+        "--wandb-run-name",
+        default=None,
+        help="W&B run name. Default: 'shard<index>of<count>'.",
+    )
+    wandb_group.add_argument(
+        "--wandb-mode",
+        choices=("online", "offline", "disabled"),
+        default="online",
+        help="W&B logging mode; 'offline' buffers to disk. Default: online.",
+    )
+    wandb_group.add_argument(
+        "--wandb-tag",
+        dest="wandb_tags",
+        action="append",
+        default=None,
+        metavar="TAG",
+        help="Tag to attach to the W&B run; may be repeated.",
+    )
+    wandb_group.add_argument(
+        "--wandb-log-every-n-clips",
+        type=int,
+        default=1,
+        help=(
+            "Send one point every N finished clips; failures are always sent. "
+            "Default: 1."
+        ),
+    )
     args = parser.parse_args()
 
     if args.num_shards < 1:
@@ -182,6 +312,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--max-clips must be at least 1")
     if args.max_frames_per_clip is not None and args.max_frames_per_clip < 1:
         parser.error("--max-frames-per-clip must be at least 1")
+    if args.wandb_log_every_n_clips < 1:
+        parser.error("--wandb-log-every-n-clips must be at least 1")
     if (args.input_root is None) != (args.output_root is None):
         parser.error("--input-root and --output-root must be used together")
     if args.clip_ids is not None:
@@ -189,12 +321,173 @@ def parse_args() -> argparse.Namespace:
             parser.error("--clip-id requires --input-root")
         if len(args.clip_ids) != len(set(args.clip_ids)):
             parser.error("--clip-id must not contain duplicates")
+    if args.input_mode == "video" and args.input_root is None:
+        parser.error("--input-mode video requires --input-root and --output-root")
+
+    if args.frame_index_start < 0:
+        parser.error("--frame-index-start must not be negative")
+    if args.wandb_log_every_n_clips < 1:
+        parser.error("--wandb-log-every-n-clips must be at least 1")
+
+    if args.video_suffixes is None:
+        args.video_suffixes = set(VIDEO_SUFFIXES)
+    else:
+        args.video_suffixes = {
+            suffix.lower() if suffix.startswith(".") else f".{suffix.lower()}"
+            for suffix in args.video_suffixes
+        }
+
+    try:
+        probe = args.frame_name_template.format(index=0)
+    except (KeyError, IndexError, ValueError) as error:
+        parser.error(f"--frame-name-template is not a valid pattern: {error}")
+    if not probe or probe != Path(probe).name:
+        parser.error("--frame-name-template must expand to a bare file name")
+    if args.frame_name_template.format(index=0) == args.frame_name_template.format(
+        index=1
+    ):
+        parser.error("--frame-name-template must depend on {index}")
     return args
 
 
 def log(message: str) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}", flush=True)
+    # tqdm.write scrolls the line above the progress bar instead of through it,
+    # and falls back to a plain print when no bar is active.
+    tqdm.write(f"[{timestamp}] {message}")
+
+
+class WandbMonitor:
+    """Optional Weights & Biases reporter; a no-op unless ``--wandb`` is set.
+
+    One run per worker process, so sharded extractions stay readable: every
+    shard joins the same group and carries its shard index in the config.
+    """
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.enabled = bool(args.wandb)
+        self.run = None
+        self.log_every_n_clips = args.wandb_log_every_n_clips
+        if not self.enabled:
+            return
+
+        try:
+            import wandb
+        except ImportError as error:  # pragma: no cover - depends on the env
+            raise SystemExit(
+                "--wandb was requested but wandb is not installed; "
+                "run 'pip install wandb' or drop the flag"
+            ) from error
+
+        self.wandb = wandb
+        input_root = args.input_root if args.input_root is not None else args.dataset_root
+        group = args.wandb_run_group or f"{args.split_name}-{Path(input_root).name}"
+        name = args.wandb_run_name or f"shard{args.shard_index}of{args.num_shards}"
+        self.run = wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            group=group,
+            name=name,
+            job_type="wilor-extract",
+            mode=args.wandb_mode,
+            tags=args.wandb_tags,
+            config={
+                "split_name": args.split_name,
+                "input_mode": args.input_mode,
+                "input_root": str(input_root),
+                "output_root": str(args.output_root) if args.output_root else None,
+                "num_shards": args.num_shards,
+                "shard_index": args.shard_index,
+                "device": args.device,
+                "detector_batch_size": args.detector_batch_size,
+                "wilor_batch_size": args.wilor_batch_size,
+                "confidence": args.confidence,
+                "iou": args.iou,
+                "rescale_factor": args.rescale_factor,
+                "fast": args.fast,
+                "overwrite": args.overwrite,
+                "max_clips": args.max_clips,
+                "max_frames_per_clip": args.max_frames_per_clip,
+                "frame_name_template": args.frame_name_template,
+                "frame_index_start": args.frame_index_start,
+                "checkpoint": str(args.checkpoint),
+            },
+        )
+        log(f"wandb run: {getattr(self.run, 'url', None) or args.wandb_mode}")
+
+    def log_metrics(self, metrics: dict[str, float | int | str | None]) -> None:
+        if self.run is None:
+            return
+        self.run.log({key: value for key, value in metrics.items() if value is not None})
+
+    def log_split(self, *, split: str, mode: str, assigned: int, total: int) -> None:
+        self.log_metrics(
+            {
+                "split/assigned_clips": assigned,
+                "split/total_clips": total,
+                "split/name": split,
+                "split/mode": mode,
+            }
+        )
+
+    def log_clip(
+        self,
+        *,
+        clip_id: str,
+        frames: int,
+        hands: int,
+        clip_seconds: float,
+        processed_clips: int,
+        processed_frames: int,
+        detected_hands: int,
+        failed_clips: int,
+        skipped_clips: int,
+        total_seconds: float,
+        device: torch.device,
+    ) -> None:
+        if self.run is None:
+            return
+        if processed_clips % self.log_every_n_clips != 0:
+            return
+        self.log_metrics(
+            {
+                "clip/frames": frames,
+                "clip/hands": hands,
+                "clip/hands_per_frame": hands / max(frames, 1),
+                "clip/seconds": clip_seconds,
+                "clip/fps": frames / max(clip_seconds, 1e-6),
+                "progress/clips_done": processed_clips,
+                "progress/frames_done": processed_frames,
+                "progress/hands_done": detected_hands,
+                "progress/clips_failed": failed_clips,
+                "progress/clips_skipped": skipped_clips,
+                "progress/elapsed_seconds": total_seconds,
+                "progress/mean_fps": processed_frames / max(total_seconds, 1e-6),
+                "gpu/max_memory_gb": (
+                    torch.cuda.max_memory_allocated(device) / 1024**3
+                    if torch.cuda.is_available()
+                    else None
+                ),
+            }
+        )
+
+    def log_failure(self, *, clip_id: str, failed_clips: int, reason: str) -> None:
+        self.log_metrics(
+            {
+                "progress/clips_failed": failed_clips,
+                "failure/clip_id": clip_id,
+                "failure/reason": reason,
+            }
+        )
+
+    def finish(self, summary: dict[str, float | int], exit_code: int) -> None:
+        if self.run is None:
+            return
+        for key, value in summary.items():
+            self.run.summary[key] = value
+        self.run.summary["exit_code"] = exit_code
+        self.wandb.finish(exit_code=0 if exit_code == 0 else 1)
+        self.run = None
 
 
 def clip_belongs_to_shard(
@@ -215,6 +508,92 @@ def list_frame_paths(clip_dir: Path, max_frames: int | None) -> list[Path]:
         if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
     )
     return paths if max_frames is None else paths[:max_frames]
+
+
+def discover_clips(
+    input_root: Path,
+    input_mode: str,
+    video_suffixes: set[str],
+) -> tuple[list[ClipSource], str]:
+    """List the clips under ``input_root`` and report the resolved mode."""
+    entries = sorted(input_root.iterdir())
+    image_dirs = [path for path in entries if path.is_dir()]
+    video_files = [
+        path
+        for path in entries
+        if path.is_file() and path.suffix.lower() in video_suffixes
+    ]
+
+    if input_mode == "auto":
+        if image_dirs and video_files:
+            raise ValueError(
+                f"{input_root} holds both clip directories and video files; "
+                "pass --input-mode images or --input-mode video"
+            )
+        resolved_mode = "video" if video_files else "images"
+    else:
+        resolved_mode = input_mode
+
+    if resolved_mode == "images":
+        return [ClipSource(path.name, path, False) for path in image_dirs], resolved_mode
+
+    clips = [ClipSource(path.stem, path, True) for path in video_files]
+    seen: dict[str, Path] = {}
+    for clip in clips:
+        previous = seen.get(clip.clip_id)
+        if previous is not None:
+            raise ValueError(
+                f"Ambiguous clip id '{clip.clip_id}' under {input_root}: "
+                f"{previous.name} and {clip.path.name} share a stem"
+            )
+        seen[clip.clip_id] = clip.path
+    return clips, resolved_mode
+
+
+def iter_video_frames(
+    *,
+    video_path: Path,
+    output_dir: Path,
+    frame_name_template: str,
+    frame_index_start: int,
+    max_frames: int | None,
+    skip_existing: bool,
+) -> Iterator[FrameItem]:
+    """Decode a clip video, yielding frames that still need a pickle."""
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+    try:
+        frame_index = frame_index_start
+        decoded = 0
+        while max_frames is None or decoded < max_frames:
+            read_ok, frame = capture.read()
+            if not read_ok:
+                break
+            decoded += 1
+            frame_name = frame_name_template.format(index=frame_index)
+            frame_index += 1
+            if skip_existing:
+                pickle_path = output_dir / f"{Path(frame_name).stem}.pkl"
+                if pickle_path.is_file():
+                    continue
+            yield FrameItem(frame_name, frame)
+    finally:
+        capture.release()
+
+
+def iter_frame_batches(
+    frame_items: Iterator[FrameItem], batch_size: int
+) -> Iterator[list[FrameItem]]:
+    """Group frames into detector-sized batches without buffering the clip."""
+    batch: list[FrameItem] = []
+    for frame_item in frame_items:
+        batch.append(frame_item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 def empty_array(shape: tuple[int, ...], dtype: np.dtype = np.float32) -> np.ndarray:
@@ -250,7 +629,7 @@ def build_frame_payload(
     *,
     split: str,
     clip_id: str,
-    frame_path: Path,
+    frame_name: str,
     record: dict[str, list[np.ndarray]],
     confidence: float,
     iou: float,
@@ -279,7 +658,7 @@ def build_frame_payload(
         "schema_version": 1,
         "split": split,
         "clip_id": clip_id,
-        "frame_name": frame_path.name,
+        "frame_name": frame_name,
         "num_hands": int(hand_pose_axis_angle.shape[0]),
         # Short canonical names use MANO axis-angle in radians.
         "hand_pose": hand_pose_axis_angle,
@@ -410,9 +789,9 @@ def run_wilor_batches(
 def process_clip(
     *,
     split: str,
-    clip_dir: Path,
+    clip_id: str,
     output_dir: Path,
-    frame_paths: list[Path],
+    frame_batches: Iterator[list[FrameItem]],
     detector: YOLO,
     model: torch.nn.Module,
     model_cfg,
@@ -422,13 +801,10 @@ def process_clip(
     processed_frames = 0
     detected_hands = 0
 
-    for chunk_start in range(0, len(frame_paths), args.detector_batch_size):
-        chunk_paths = frame_paths[
-            chunk_start : chunk_start + args.detector_batch_size
-        ]
-        frame_records = [new_frame_record() for _ in chunk_paths]
+    for chunk_items in frame_batches:
+        frame_records = [new_frame_record() for _ in chunk_items]
         results = detector.predict(
-            source=[str(path) for path in chunk_paths],
+            source=[frame_item.source for frame_item in chunk_items],
             conf=args.confidence,
             iou=args.iou,
             device=args.device,
@@ -476,18 +852,18 @@ def process_clip(
             batch_size=args.wilor_batch_size,
         )
 
-        for frame_path, record in zip(chunk_paths, frame_records):
+        for frame_item, record in zip(chunk_items, frame_records):
             payload = build_frame_payload(
                 split=split,
-                clip_id=clip_dir.name,
-                frame_path=frame_path,
+                clip_id=clip_id,
+                frame_name=frame_item.name,
                 record=record,
                 confidence=args.confidence,
                 iou=args.iou,
                 rescale_factor=args.rescale_factor,
                 fast=args.fast,
             )
-            output_path = output_dir / f"{frame_path.stem}.pkl"
+            output_path = output_dir / f"{frame_item.stem}.pkl"
             save_frame_pickle_atomic(output_path, payload)
             processed_frames += 1
             detected_hands += payload["num_hands"]
@@ -520,6 +896,7 @@ def main() -> int:
     model = model.to(device)
     model.eval()
     detector = YOLO(str(args.detector))
+    monitor = WandbMonitor(args)
 
     processed_clips = 0
     skipped_clips = 0
@@ -527,6 +904,19 @@ def main() -> int:
     processed_frames = 0
     detected_hands = 0
     started_at = time.monotonic()
+
+    def monitor_summary() -> dict[str, float | int]:
+        """Run totals as of now; read by every W&B finish path."""
+        elapsed_now = time.monotonic() - started_at
+        return {
+            "clips_processed": processed_clips,
+            "clips_skipped": skipped_clips,
+            "clips_failed": failed_clips,
+            "frames_processed": processed_frames,
+            "hands_detected": detected_hands,
+            "elapsed_seconds": elapsed_now,
+            "mean_fps": processed_frames / max(elapsed_now, 1e-6),
+        }
 
     if args.input_root is not None:
         split_jobs = [(args.split_name, args.input_root, args.output_root)]
@@ -544,84 +934,159 @@ def main() -> int:
         if not input_root.is_dir():
             raise FileNotFoundError(f"Input split does not exist: {input_root}")
 
-        clip_dirs = sorted(path for path in input_root.iterdir() if path.is_dir())
+        clips, resolved_mode = discover_clips(
+            input_root,
+            args.input_mode,
+            args.video_suffixes,
+        )
         if args.clip_ids is not None:
-            clip_dirs_by_id = {path.name: path for path in clip_dirs}
+            clips_by_id = {clip.clip_id: clip for clip in clips}
             missing_clip_ids = [
-                clip_id for clip_id in args.clip_ids if clip_id not in clip_dirs_by_id
+                clip_id for clip_id in args.clip_ids if clip_id not in clips_by_id
             ]
             if missing_clip_ids:
                 missing = ", ".join(missing_clip_ids)
                 raise FileNotFoundError(
                     f"Clip IDs not found under {input_root}: {missing}"
                 )
-            clip_dirs = [clip_dirs_by_id[clip_id] for clip_id in args.clip_ids]
+            clips = [clips_by_id[clip_id] for clip_id in args.clip_ids]
         assigned = [
-            path
-            for path in clip_dirs
+            clip
+            for clip in clips
             if clip_belongs_to_shard(
                 split,
-                path.name,
+                clip.clip_id,
                 args.num_shards,
                 args.shard_index,
             )
         ]
         log(
-            f"split={split}: {len(assigned)}/{len(clip_dirs)} clips assigned; "
+            f"split={split}: mode={resolved_mode}, "
+            f"{len(assigned)}/{len(clips)} clips assigned; "
             f"output={output_root}"
         )
+        monitor.log_split(
+            split=split,
+            mode=resolved_mode,
+            assigned=len(assigned),
+            total=len(clips),
+        )
+        if resolved_mode == "video":
+            log(
+                f"video frame names: "
+                f"'{args.frame_name_template.format(index=args.frame_index_start)}' "
+                f"onward"
+            )
 
-        for clip_dir in assigned:
+        # disable=None turns the bar off when stdout is not a terminal, so a
+        # backgrounded worker writing to a log file emits plain lines only.
+        bar = tqdm(
+            assigned,
+            desc=f"{split} shard{args.shard_index}",
+            unit="clip",
+            dynamic_ncols=True,
+            disable=None,
+        )
+        for clip in bar:
+            # Counters from every earlier clip, including the ones that took
+            # the skip and fail branches below.
+            bar.set_postfix(
+                done=processed_clips,
+                skip=skipped_clips,
+                fail=failed_clips,
+                fps=f"{processed_frames / max(time.monotonic() - started_at, 1e-6):.1f}",
+                refresh=False,
+            )
             if args.max_clips is not None and processed_clips >= args.max_clips:
+                bar.close()
                 log("Reached --max-clips; stopping cleanly")
+                monitor.finish(monitor_summary(), 0)
                 return 0
 
-            output_dir = output_root / "wilor_params" / clip_dir.name
+            output_dir = output_root / "wilor_params" / clip.clip_id
             complete_marker = output_dir / ".complete"
             if complete_marker.is_file() and not args.overwrite:
                 skipped_clips += 1
                 continue
 
-            frame_paths = list_frame_paths(
-                clip_dir,
-                max_frames=args.max_frames_per_clip,
-            )
-            if not frame_paths:
-                log(f"SKIP empty clip: {split}/{clip_dir.name}")
-                skipped_clips += 1
-                continue
-            if not args.overwrite:
-                frame_paths = [
-                    frame_path
-                    for frame_path in frame_paths
-                    if not (output_dir / f"{frame_path.stem}.pkl").is_file()
-                ]
+            if clip.is_video:
+                frame_items = iter_video_frames(
+                    video_path=clip.path,
+                    output_dir=output_dir,
+                    frame_name_template=args.frame_name_template,
+                    frame_index_start=args.frame_index_start,
+                    max_frames=args.max_frames_per_clip,
+                    skip_existing=not args.overwrite,
+                )
+            else:
+                frame_paths = list_frame_paths(
+                    clip.path,
+                    max_frames=args.max_frames_per_clip,
+                )
                 if not frame_paths:
-                    if args.max_frames_per_clip is None:
-                        output_dir.mkdir(parents=True, exist_ok=True)
-                        complete_marker.touch()
+                    log(f"SKIP empty clip: {split}/{clip.clip_id}")
                     skipped_clips += 1
                     continue
+                if not args.overwrite:
+                    frame_paths = [
+                        frame_path
+                        for frame_path in frame_paths
+                        if not (output_dir / f"{frame_path.stem}.pkl").is_file()
+                    ]
+                    if not frame_paths:
+                        if args.max_frames_per_clip is None:
+                            output_dir.mkdir(parents=True, exist_ok=True)
+                            complete_marker.touch()
+                        skipped_clips += 1
+                        continue
+                frame_items = iter(
+                    [
+                        FrameItem(frame_path.name, str(frame_path))
+                        for frame_path in frame_paths
+                    ]
+                )
 
             clip_started_at = time.monotonic()
             try:
                 frames, hands = process_clip(
                     split=split,
-                    clip_dir=clip_dir,
+                    clip_id=clip.clip_id,
                     output_dir=output_dir,
-                    frame_paths=frame_paths,
+                    frame_batches=iter_frame_batches(
+                        frame_items,
+                        args.detector_batch_size,
+                    ),
                     detector=detector,
                     model=model,
                     model_cfg=model_cfg,
                     device=device,
                     args=args,
                 )
-                if args.max_frames_per_clip is None:
-                    complete_marker.touch()
-            except Exception:
+            except Exception as error:
                 failed_clips += 1
-                log(f"FAIL {split}/{clip_dir.name}\n{traceback.format_exc()}")
+                log(f"FAIL {split}/{clip.clip_id}\n{traceback.format_exc()}")
+                monitor.log_failure(
+                    clip_id=clip.clip_id,
+                    failed_clips=failed_clips,
+                    reason=f"{type(error).__name__}: {error}",
+                )
                 continue
+
+            if clip.is_video and frames == 0:
+                already_done = output_dir.is_dir() and any(output_dir.glob("*.pkl"))
+                if not already_done:
+                    failed_clips += 1
+                    log(f"FAIL {split}/{clip.clip_id}: decoded 0 frames from video")
+                    monitor.log_failure(
+                        clip_id=clip.clip_id,
+                        failed_clips=failed_clips,
+                        reason="decoded 0 frames from video",
+                    )
+                    continue
+
+            if args.max_frames_per_clip is None:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                complete_marker.touch()
 
             processed_clips += 1
             processed_frames += frames
@@ -629,12 +1094,27 @@ def main() -> int:
             clip_seconds = time.monotonic() - clip_started_at
             total_seconds = time.monotonic() - started_at
             log(
-                f"DONE {split}/{clip_dir.name}: frames={frames}, hands={hands}, "
+                f"DONE {split}/{clip.clip_id}: frames={frames}, hands={hands}, "
                 f"clip_fps={frames / max(clip_seconds, 1e-6):.2f}; "
                 f"worker_total clips={processed_clips}, frames={processed_frames}, "
                 f"fps={processed_frames / max(total_seconds, 1e-6):.2f}, "
                 f"failed={failed_clips}, skipped={skipped_clips}"
             )
+            monitor.log_clip(
+                clip_id=clip.clip_id,
+                frames=frames,
+                hands=hands,
+                clip_seconds=clip_seconds,
+                processed_clips=processed_clips,
+                processed_frames=processed_frames,
+                detected_hands=detected_hands,
+                failed_clips=failed_clips,
+                skipped_clips=skipped_clips,
+                total_seconds=total_seconds,
+                device=device,
+            )
+
+        bar.close()
 
     elapsed = time.monotonic() - started_at
     log(
@@ -642,7 +1122,9 @@ def main() -> int:
         f"hands={detected_hands}, failed={failed_clips}, "
         f"skipped={skipped_clips}, seconds={elapsed:.1f}"
     )
-    return 1 if failed_clips else 0
+    exit_code = 1 if failed_clips else 0
+    monitor.finish(monitor_summary(), exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":
